@@ -4,44 +4,32 @@ const mysql = require("mysql2/promise");
 const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
 const multer = require("multer");
-const path = require("path");
-const fs = require("fs");
+const { S3Client, PutObjectCommand, DeleteObjectCommand } = require("@aws-sdk/client-s3");
 
 const app = express();
 const port = 5000;
-const publicDomain = "https://vasya010-backend1-10db.twc1.net"; // Публичный домен для Timeweb
-const jwtSecret = "your_jwt_secret_123"; // Замените на свой секретный ключ00
+const publicDomain = "https://vasya010-backend1-10db.twc1.net"; // Public domain for Timeweb
+const jwtSecret = "your_jwt_secret_123"; // Replace with your secret key
+
+// S3 Configuration
+const s3Client = new S3Client({
+  region: "ru-1",
+  endpoint: "https://s3.twcstorage.ru",
+  credentials: {
+    accessKeyId: "GIMZKRMOGP4F0MOTLVCE",
+    secretAccessKey: "WvhFfIzzCkITUrXfD8JfoDne7LmBhnNzDuDBj89I",
+  },
+  forcePathStyle: true, // Required for non-AWS S3-compatible services
+});
+
+const bucketName = "a2c31109-3cf2c97b-aca1-42b0-a822-3e0ade279447";
 
 // Middleware
 app.use(cors());
 app.use(express.json());
 
-// Serve static files from the uploads directory
-app.use("/uploads", express.static(path.join(__dirname, "Uploads")));
-
-// Database connection configuration
-const dbConfig = {
-  host: "vh452.timeweb.ru",
-  user: "cs51703_kgadmin",
-  password: "Vasya11091109",
-  database: "cs51703_kgadmin",
-  port: 3306, // Убедитесь, что порт правильный (по умолчанию 3306)
-};
-
-// Multer configuration for file uploads
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    const uploadDir = path.join(__dirname, "Uploads");
-    if (!fs.existsSync(uploadDir)) {
-      fs.mkdirSync(uploadDir);
-    }
-    cb(null, uploadDir);
-  },
-  filename: (req, file, cb) => {
-    const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
-    cb(null, uniqueSuffix + path.extname(file.originalname));
-  },
-});
+// Multer configuration for memory storage (temporary storage before S3 upload)
+const storage = multer.memoryStorage();
 const upload = multer({
   storage,
   fileFilter: (req, file, cb) => {
@@ -68,13 +56,21 @@ const authenticate = (req, res, next) => {
   }
 };
 
+// Database connection configuration
+const dbConfig = {
+  host: "vh452.timeweb.ru",
+  user: "cs51703_kgadmin",
+  password: "Vasya11091109",
+  database: "cs51703_kgadmin",
+  port: 3306,
+};
+
 // Test database connection and create initial user
 async function testDatabaseConnection() {
   try {
     const connection = await mysql.createConnection(dbConfig);
     console.log("Подключение к базе данных cs51703_kgadmin успешно установлено!");
 
-    // Проверка существования таблицы users1
     const [tables] = await connection.execute("SHOW TABLES LIKE 'users1'");
     if (tables.length === 0) {
       console.log("Таблица users1 не существует, создаем...");
@@ -92,7 +88,6 @@ async function testDatabaseConnection() {
       `);
     }
 
-    // Проверка, есть ли пользователи в таблице
     const [users] = await connection.execute("SELECT COUNT(*) AS count FROM users1");
     if (users[0].count === 0) {
       console.log("Пользователи отсутствуют, создаем начального пользователя...");
@@ -119,7 +114,6 @@ async function testDatabaseConnection() {
   }
 }
 
-// Run database connection test on server start
 testDatabaseConnection();
 
 // Test endpoint
@@ -166,7 +160,7 @@ app.post("/api/admin/login", async (req, res) => {
       email: user.email,
       phone: user.phone,
       role: user.role,
-      photoUrl: user.photoUrl ? `${publicDomain}/uploads/${user.photoUrl}` : null,
+      photoUrl: user.photoUrl ? `https://s3.twcstorage.ru/${bucketName}/${user.photoUrl}` : null,
       name: `${user.first_name} ${user.last_name}`.trim(),
     };
 
@@ -192,7 +186,7 @@ app.get("/api/users", authenticate, async (req, res) => {
       rows.map((user) => ({
         ...user,
         name: `${user.first_name} ${user.last_name}`,
-        photoUrl: user.photoUrl ? `${publicDomain}/uploads/${user.photoUrl}` : null,
+        photoUrl: user.photoUrl ? `https://s3.twcstorage.ru/${bucketName}/${user.photoUrl}` : null,
       }))
     );
   } catch (error) {
@@ -215,11 +209,22 @@ app.post("/api/users", authenticate, upload.single("photo"), async (req, res) =>
   }
 
   const [first_name, last_name = ""] = name.split(" ");
+  const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
+  const profile_picture = photo ? `${uniqueSuffix}${path.extname(photo.originalname)}` : null;
 
   try {
+    if (photo) {
+      const uploadParams = {
+        Bucket: bucketName,
+        Key: profile_picture,
+        Body: photo.buffer,
+        ContentType: photo.mimetype,
+      };
+      await s3Client.send(new PutObjectCommand(uploadParams));
+    }
+
     const connection = await mysql.createConnection(dbConfig);
     const hashedPassword = await bcrypt.hash(password, 10);
-    const profile_picture = photo ? photo.filename : null;
 
     const [result] = await connection.execute(
       "INSERT INTO users1 (first_name, last_name, email, phone, role, password, profile_picture) VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -233,7 +238,7 @@ app.post("/api/users", authenticate, upload.single("photo"), async (req, res) =>
       email,
       phone,
       role,
-      photoUrl: profile_picture ? `${publicDomain}/uploads/${profile_picture}` : null,
+      photoUrl: profile_picture ? `https://s3.twcstorage.ru/${bucketName}/${profile_picture}` : null,
       name: `${first_name} ${last_name}`.trim(),
     };
 
@@ -260,6 +265,8 @@ app.put("/api/users/:id", authenticate, upload.single("photo"), async (req, res)
   }
 
   const [first_name, last_name = ""] = name.split(" ");
+  const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
+  let profile_picture = null;
 
   try {
     const connection = await mysql.createConnection(dbConfig);
@@ -270,14 +277,20 @@ app.put("/api/users/:id", authenticate, upload.single("photo"), async (req, res)
     }
 
     const existingPhoto = existingUsers[0].profile_picture;
-    let profile_picture = existingPhoto;
+    profile_picture = existingPhoto;
 
     if (photo) {
-      profile_picture = photo.filename;
+      profile_picture = `${uniqueSuffix}${path.extname(photo.originalname)}`;
+      const uploadParams = {
+        Bucket: bucketName,
+        Key: profile_picture,
+        Body: photo.buffer,
+        ContentType: photo.mimetype,
+      };
+      await s3Client.send(new PutObjectCommand(uploadParams));
+
       if (existingPhoto) {
-        fs.unlink(path.join(__dirname, "Uploads", existingPhoto), (err) => {
-          if (err) console.error("Error deleting old photo:", err);
-        });
+        await s3Client.send(new DeleteObjectCommand({ Bucket: bucketName, Key: existingPhoto }));
       }
     }
 
@@ -298,7 +311,7 @@ app.put("/api/users/:id", authenticate, upload.single("photo"), async (req, res)
       email,
       phone,
       role,
-      photoUrl: profile_picture ? `${publicDomain}/uploads/${profile_picture}` : null,
+      photoUrl: profile_picture ? `https://s3.twcstorage.ru/${bucketName}/${profile_picture}` : null,
       name: `${first_name} ${last_name}`.trim(),
     };
 
@@ -328,9 +341,7 @@ app.delete("/api/users/:id", authenticate, async (req, res) => {
 
     const profile_picture = users[0].profile_picture;
     if (profile_picture) {
-      fs.unlink(path.join(__dirname, "Uploads", profile_picture), (err) => {
-        if (err) console.error("Error deleting photo:", err);
-      });
+      await s3Client.send(new DeleteObjectCommand({ Bucket: bucketName, Key: profile_picture }));
     }
 
     const [result] = await connection.execute("DELETE FROM users1 WHERE id = ?", [id]);
@@ -347,122 +358,6 @@ app.delete("/api/users/:id", authenticate, async (req, res) => {
   }
 });
 
-// Get all districts and subdistricts (protected)
-app.get("/api/raions", authenticate, async (req, res) => {
-  try {
-    const connection = await mysql.createConnection(dbConfig);
-    const [districts] = await connection.execute(
-      "SELECT id, name, NULL AS parentRaionId, link FROM districts"
-    );
-    const [subdistricts] = await connection.execute(
-      "SELECT id, name, district_id AS parentRaionId, link FROM subdistricts"
-    );
-    await connection.end();
-    res.json([...districts, ...subdistricts]);
-  } catch (error) {
-    console.error("Error fetching districts and subdistricts:", error);
-    res.status(500).json({ error: "Internal server error" });
-  }
-});
-
-// Create a new district (protected, only for SUPER_ADMIN)
-app.post("/api/raions", authenticate, async (req, res) => {
-  if (req.user.role !== "SUPER_ADMIN") {
-    return res.status(403).json({ error: "Доступ запрещен: требуется роль SUPER_ADMIN" });
-  }
-
-  const { name } = req.body;
-
-  if (!name) {
-    return res.status(400).json({ error: "Name is required" });
-  }
-
-  try {
-    const connection = await mysql.createConnection(dbConfig);
-    const [result] = await connection.execute(
-      "INSERT INTO districts (name, link) VALUES (?, NULL)",
-      [name]
-    );
-
-    const newDistrict = {
-      id: result.insertId,
-      name,
-      parentRaionId: null,
-      link: null,
-    };
-
-    await connection.end();
-    res.json(newDistrict);
-  } catch (error) {
-    console.error("Error creating district:", error);
-    res.status(500).json({ error: "Internal server error" });
-  }
-});
-
-// Create a new subdistrict (protected, only for SUPER_ADMIN)
-app.post("/api/subraions", authenticate, async (req, res) => {
-  if (req.user.role !== "SUPER_ADMIN") {
-    return res.status(403).json({ error: "Доступ запрещен: требуется роль SUPER_ADMIN" });
-  }
-
-  const { name, parentRaionId } = req.body;
-
-  if (!name || !parentRaionId) {
-    return res.status(400).json({ error: "Name and parentRaionId are required" });
-  }
-
-  try {
-    const connection = await mysql.createConnection(dbConfig);
-    const [parent] = await connection.execute("SELECT id FROM districts WHERE id = ?", [parentRaionId]);
-    if (parent.length === 0) {
-      await connection.end();
-      return res.status(400).json({ error: "Parent district not found" });
-    }
-
-    const [result] = await connection.execute(
-      "INSERT INTO subdistricts (name, district_id, link) VALUES (?, ?, NULL)",
-      [name, parentRaionId]
-    );
-
-    const newSubDistrict = {
-      id: result.insertId,
-      name,
-      parentRaionId,
-      link: null,
-    };
-
-    await connection.end();
-    res.json(newSubDistrict);
-  } catch (error) {
-    console.error("Error creating subdistrict:", error);
-    res.status(500).json({ error: "Internal server error" });
-  }
-});
-
-// Get all options (protected)
-app.get("/api/options", authenticate, async (req, res) => {
-  try {
-    const connection = await mysql.createConnection(dbConfig);
-    const [rows] = await connection.execute(
-      "SELECT id, type, area, price, status, owner, address, description, curator, images, document, created_at FROM options"
-    );
-
-    const options = rows.map((row) => ({
-      ...row,
-      images: row.images ? JSON.parse(row.images).map((img) => `${publicDomain}/uploads/${img}`) : [],
-      document: row.document ? `${publicDomain}/uploads/${row.document}` : null,
-      date: new Date(row.created_at).toLocaleDateString('ru-RU'),
-      time: new Date(row.created_at).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }),
-    }));
-
-    await connection.end();
-    res.json(options);
-  } catch (error) {
-    console.error("Error fetching options:", error);
-    res.status(500).json({ error: "Internal server error" });
-  }
-});
-
 // Create a new option (protected, only for SUPER_ADMIN or REALTOR)
 app.post("/api/options", authenticate, upload.fields([
   { name: "images", maxCount: 10 },
@@ -473,18 +368,48 @@ app.post("/api/options", authenticate, upload.fields([
   }
 
   const { type, area, price, status, owner, address, description, curator } = req.body;
-  const images = req.files["images"] ? req.files["images"].map((file) => file.filename) : [];
-  const document = req.files["document"] ? req.files["document"][0].filename : null;
+  const images = req.files["images"] ? req.files["images"].map((file) => ({
+    filename: `${Date.now()}-${Math.round(Math.random() * 1e9)}${path.extname(file.originalname)}`,
+    buffer: file.buffer,
+    mimetype: file.mimetype,
+  })) : [];
+  const document = req.files["document"] ? {
+    filename: `${Date.now()}-${Math.round(Math.random() * 1e9)}${path.extname(req.files["document"][0].originalname)}`,
+    buffer: req.files["document"][0].buffer,
+    mimetype: req.files["document"][0].mimetype,
+  } : null;
 
   if (!type || !area || !price || !status || !owner || !address || !description || !curator) {
     return res.status(400).json({ error: "All fields are required" });
   }
 
   try {
+    // Upload images to S3
+    for (const image of images) {
+      const uploadParams = {
+        Bucket: bucketName,
+        Key: image.filename,
+        Body: image.buffer,
+        ContentType: image.mimetype,
+      };
+      await s3Client.send(new PutObjectCommand(uploadParams));
+    }
+
+    // Upload document to S3 if present
+    if (document) {
+      const uploadParams = {
+        Bucket: bucketName,
+        Key: document.filename,
+        Body: document.buffer,
+        ContentType: document.mimetype,
+      };
+      await s3Client.send(new PutObjectCommand(uploadParams));
+    }
+
     const connection = await mysql.createConnection(dbConfig);
     const [result] = await connection.execute(
       "INSERT INTO options (type, area, price, status, owner, address, description, curator, images, document, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())",
-      [type, area, price, status, owner, address, description, curator, JSON.stringify(images), document]
+      [type, area, price, status, owner, address, description, curator, JSON.stringify(images.map(img => img.filename)), document ? document.filename : null]
     );
 
     const newOption = {
@@ -497,8 +422,8 @@ app.post("/api/options", authenticate, upload.fields([
       address,
       description,
       curator,
-      images: images.map((img) => `${publicDomain}/uploads/${img}`),
-      document: document ? `${publicDomain}/uploads/${document}` : null,
+      images: images.map((img) => `https://s3.twcstorage.ru/${bucketName}/${img.filename}`),
+      document: document ? `https://s3.twcstorage.ru/${bucketName}/${document.filename}` : null,
       date: new Date().toLocaleDateString('ru-RU'),
       time: new Date().toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }),
     };
@@ -529,16 +454,13 @@ app.delete("/api/options/:id", authenticate, async (req, res) => {
 
     const { images, document } = options[0];
     if (images) {
-      JSON.parse(images).forEach((img) => {
-        fs.unlink(path.join(__dirname, "Uploads", img), (err) => {
-          if (err) console.error("Error deleting image:", err);
-        });
-      });
+      const imageFiles = JSON.parse(images);
+      for (const img of imageFiles) {
+        await s3Client.send(new DeleteObjectCommand({ Bucket: bucketName, Key: img }));
+      }
     }
     if (document) {
-      fs.unlink(path.join(__dirname, "Uploads", document), (err) => {
-        if (err) console.error("Error deleting document:", err);
-      });
+      await s3Client.send(new DeleteObjectCommand({ Bucket: bucketName, Key: document }));
     }
 
     const [result] = await connection.execute("DELETE FROM options WHERE id = ?", [id]);
@@ -551,6 +473,30 @@ app.delete("/api/options/:id", authenticate, async (req, res) => {
     res.json({ message: "Option deleted successfully" });
   } catch (error) {
     console.error("Error deleting option:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// Get all options (protected)
+app.get("/api/options", authenticate, async (req, res) => {
+  try {
+    const connection = await mysql.createConnection(dbConfig);
+    const [rows] = await connection.execute(
+      "SELECT id, type, area, price, status, owner, address, description, curator, images, document, created_at FROM options"
+    );
+
+    const options = rows.map((row) => ({
+      ...row,
+      images: row.images ? JSON.parse(row.images).map((img) => `https://s3.twcstorage.ru/${bucketName}/${img}`) : [],
+      document: row.document ? `https://s3.twcstorage.ru/${bucketName}/${row.document}` : null,
+      date: new Date(row.created_at).toLocaleDateString('ru-RU'),
+      time: new Date(row.created_at).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }),
+    }));
+
+    await connection.end();
+    res.json(options);
+  } catch (error) {
+    console.error("Error fetching options:", error);
     res.status(500).json({ error: "Internal server error" });
   }
 });
