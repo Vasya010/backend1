@@ -18,7 +18,7 @@ app.use("/uploads", express.static(path.join(__dirname, "Uploads")));
 
 // Database connection configuration
 const dbConfig = {
-  host: "localhost",
+  host: "vh452.timeweb.ru",
   user: "cs51703_kgadmin",
   password: "Vasya11091109",
   database: "cs51703_kgadmin",
@@ -74,7 +74,7 @@ app.get("/api/message", (req, res) => {
   res.json({ message: "Привет от бэкенда Ala-Too!" });
 });
 
-// Admin login endpoint (Updated to allow any role)
+// Admin login endpoint
 app.post("/api/admin/login", async (req, res) => {
   const { email, password } = req.body;
 
@@ -369,13 +369,15 @@ app.get("/api/options", async (req, res) => {
   try {
     const connection = await mysql.createConnection(dbConfig);
     const [rows] = await connection.execute(
-      "SELECT id, type, area, price, status, owner, address, description, curator, images, document FROM options"
+      "SELECT id, type, area, price, status, owner, address, description, curator, images, document, created_at FROM options"
     );
 
     const options = rows.map((row) => ({
       ...row,
       images: row.images ? JSON.parse(row.images).map((img) => `http://localhost:${port}/Uploads/${img}`) : [],
       document: row.document ? `http://localhost:${port}/Uploads/${row.document}` : null,
+      date: new Date(row.created_at).toLocaleDateString('ru-RU'),
+      time: new Date(row.created_at).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }),
     }));
 
     await connection.end();
@@ -402,7 +404,7 @@ app.post("/api/options", upload.fields([
   try {
     const connection = await mysql.createConnection(dbConfig);
     const [result] = await connection.execute(
-      "INSERT INTO options (type, area, price, status, owner, address, description, curator, images, document) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      "INSERT INTO options (type, area, price, status, owner, address, description, curator, images, document, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())",
       [type, area, price, status, owner, address, description, curator, JSON.stringify(images), document]
     );
 
@@ -418,6 +420,8 @@ app.post("/api/options", upload.fields([
       curator,
       images: images.map((img) => `http://localhost:${port}/Uploads/${img}`),
       document: document ? `http://localhost:${port}/Uploads/${document}` : null,
+      date: new Date().toLocaleDateString('ru-RU'),
+      time: new Date().toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }),
     };
 
     await connection.end();
@@ -464,6 +468,32 @@ app.delete("/api/options/:id", async (req, res) => {
     res.json({ message: "Option deleted successfully" });
   } catch (error) {
     console.error("Error deleting option:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// Get all listings for AdminDashboard
+app.get("/api/listings", async (req, res) => {
+  try {
+    const connection = await mysql.createConnection(dbConfig);
+    const [rows] = await connection.execute(
+      "SELECT id, type, area, price, status, address, created_at FROM options"
+    );
+
+    const listings = rows.map((row) => ({
+      id: row.id,
+      date: new Date(row.created_at).toLocaleDateString('ru-RU'),
+      time: new Date(row.created_at).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }),
+      area: row.area,
+      district: row.address, // Using address as district for display in AdminDashboard
+      price: row.price,
+      status: row.status,
+    }));
+
+    await connection.end();
+    res.json(listings);
+  } catch (error) {
+    console.error("Error fetching listings:", error);
     res.status(500).json({ error: "Internal server error" });
   }
 });
