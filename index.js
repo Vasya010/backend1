@@ -10,7 +10,7 @@ const fs = require("fs");
 const app = express();
 const port = 5000;
 const publicDomain = "https://vasya010-backend1-10db.twc1.net"; // Публичный домен для Timeweb
-const jwtSecret = "your_jwt_secret_123"; // Замените на свой секретный ключ
+const jwtSecret = "your_jwt_secret_123"; // Замените на свой секретный ключ00
 
 // Middleware
 app.use(cors());
