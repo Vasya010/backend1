@@ -56,6 +56,58 @@ app.get("/api/message", (req, res) => {
   res.json({ message: "Привет от бэкенда Ala-Too!" });
 });
 
+// Admin login endpoint
+app.post("/api/admin/login", async (req, res) => {
+  const { email, password } = req.body;
+
+  if (!email || !password) {
+    return res.status(400).json({ error: "Email и пароль обязательны" });
+  }
+
+  try {
+    const connection = await mysql.createConnection(dbConfig);
+
+    // Проверяем пользователя с ролью ADMIN или SUPER_ADMIN
+    const [rows] = await connection.execute(
+      "SELECT id, first_name, last_name, email, phone, role, password, profile_picture AS photoUrl FROM users1 WHERE email = ? AND role IN ('ADMIN', 'SUPER_ADMIN')",
+      [email]
+    );
+
+    if (rows.length === 0) {
+      await connection.end();
+      return res.status(401).json({ error: "Неверный email или пользователь не администратор" });
+    }
+
+    const user = rows[0];
+
+    // Проверяем пароль
+    const isPasswordValid = await bcrypt.compare(password, user.password);
+
+    if (!isPasswordValid) {
+      await connection.end();
+      return res.status(401).json({ error: "Неверный пароль" });
+    }
+
+    // Формируем ответ, исключая пароль
+    const userResponse = {
+      id: user.id,
+      first_name: user.first_name,
+      last_name: user.last_name,
+      email: user.email,
+      phone: user.phone,
+      role: user.role,
+      photoUrl: user.photoUrl ? `http://${port}/Uploads/${user.photoUrl}` : null,
+      name: `${user.first_name} ${user.last_name}`.trim(),
+    };
+
+    await connection.end();
+    res.json({ message: "Авторизация успешна", user: userResponse });
+  } catch (error) {
+    console.error("Ошибка при авторизации:", error);
+    res.status(500).json({ error: "Внутренняя ошибка сервера" });
+  }
+});
+
 // Get all users
 app.get("/api/users", async (req, res) => {
   try {
