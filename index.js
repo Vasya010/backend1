@@ -5,14 +5,14 @@ const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
 const multer = require("multer");
 const { S3Client, PutObjectCommand, DeleteObjectCommand } = require("@aws-sdk/client-s3");
-const path = require("path"); // Добавлен, так как он используется в коде
+const path = require("path");
 
 const app = express();
 const port = 5000;
-const publicDomain = "https://vasya010-backend1-10db.twc1.net"; // Public domain for Timeweb
-const jwtSecret = "your_jwt_secret_123"; // Replace with your secret key
+const publicDomain = "https://vasya010-backend1-10db.twc1.net";
+const jwtSecret = "your_jwt_secret_123";
 
-// S3 Configuration
+// Конфигурация S3
 const s3Client = new S3Client({
   region: "ru-1",
   endpoint: "https://s3.twcstorage.ru",
@@ -29,7 +29,7 @@ const bucketName = "a2c31109-3cf2c97b-aca1-42b0-a822-3e0ade279447";
 app.use(cors());
 app.use(express.json());
 
-// Multer configuration for memory storage
+// Конфигурация Multer для хранения в памяти
 const storage = multer.memoryStorage();
 const upload = multer({
   storage,
@@ -38,26 +38,33 @@ const upload = multer({
     const extname = filetypes.test(path.extname(file.originalname).toLowerCase());
     const mimetype = filetypes.test(file.mimetype);
     if (extname && mimetype) {
+      console.log(`Файл ${file.originalname} принят для загрузки`);
       return cb(null, true);
     }
+    console.error(`Файл ${file.originalname} отклонён: недопустимый тип`);
     cb(new Error("Разрешены только изображения (jpeg, jpg, png) и документы (pdf, doc, docx)"));
   },
 });
 
-// JWT authentication middleware
+// Middleware для аутентификации JWT
 const authenticate = (req, res, next) => {
   const token = req.headers.authorization?.split(" ")[1];
-  if (!token) return res.status(401).json({ error: "Токен отсутствует" });
+  if (!token) {
+    console.error("Ошибка аутентификации: токен отсутствует");
+    return res.status(401).json({ error: "Токен отсутствует" });
+  }
   try {
     const decoded = jwt.verify(token, jwtSecret);
+    console.log("Токен успешно проверен:", decoded);
     req.user = decoded;
     next();
   } catch (error) {
+    console.error("Ошибка аутентификации: неверный токен", error.message);
     res.status(401).json({ error: "Неверный токен" });
   }
 };
 
-// Database connection configuration
+// Конфигурация подключения к БД
 const dbConfig = {
   host: "vh452.timeweb.ru",
   user: "cs51703_kgadmin",
@@ -66,15 +73,16 @@ const dbConfig = {
   port: 3306,
 };
 
-// Test database connection and create initial admin user
+// Тестирование подключения к БД и создание/обновление админа
 async function testDatabaseConnection() {
   try {
     const connection = await mysql.createConnection(dbConfig);
-    console.log("Подключение к базе данных cs51703_kgadmin успешно установлено!");
+    console.log("Подключение к базе данных успешно установлено!");
 
+    // Создание таблицы users1, если не существует
     const [tables] = await connection.execute("SHOW TABLES LIKE 'users1'");
     if (tables.length === 0) {
-      console.log("Таблица users1 не существует, создаем...");
+      console.log("Таблица users1 не существует, создаём...");
       await connection.execute(`
         CREATE TABLE users1 (
           id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
@@ -89,34 +97,37 @@ async function testDatabaseConnection() {
       `);
     }
 
-    const [users] = await connection.execute("SELECT COUNT(*) AS count FROM users1");
-    if (users[0].count === 0) {
-      console.log("Администраторы отсутствуют, создаем начального администратора...");
-      const adminEmail = "admin@example.com";
-      const adminPassword = "admin123"; // Пароль для администратора
-      const hashedPassword = await bcrypt.hash(adminPassword, 10); // Хешируем пароль
-      console.log("Хешированный пароль для администратора:", hashedPassword); // Для отладки
+    // Проверка существования админа и обновление/создание
+    const adminEmail = "admin@example.com";
+    const adminPassword = "admin123";
+    const hashedPassword = await bcrypt.hash(adminPassword, 10);
+    console.log("Хешированный пароль для администратора:", hashedPassword);
+
+    const [existingAdmin] = await connection.execute(
+      "SELECT id FROM users1 WHERE email = ?",
+      [adminEmail]
+    );
+
+    if (existingAdmin.length === 0) {
+      console.log("Администратор не существует, создаём...");
       await connection.execute(
         "INSERT INTO users1 (first_name, last_name, email, phone, role, password) VALUES (?, ?, ?, ?, ?, ?)",
         ["Admin", "User", adminEmail, "123456789", "SUPER_ADMIN", hashedPassword]
       );
-      console.log("Создан администратор. Данные для входа:");
-      console.log(`Email: ${adminEmail}`);
-      console.log(`Пароль: ${adminPassword}`);
-      console.log("Роль: SUPER_ADMIN");
     } else {
-      console.log("Администратор уже существует. Проверяем данные...");
-      const [existingAdmin] = await connection.execute(
-        "SELECT email, role FROM users1 WHERE role = 'SUPER_ADMIN' LIMIT 1"
+      console.log("Администратор существует, обновляем пароль...");
+      await connection.execute(
+        "UPDATE users1 SET password = ? WHERE email = ?",
+        [hashedPassword, adminEmail]
       );
-      if (existingAdmin.length > 0) {
-        console.log("Существующий администратор:");
-        console.log(`Email: ${existingAdmin[0].email}`);
-        console.log("Пароль: (хешированный, используйте тот, что вы установили)");
-        console.log(`Роль: ${existingAdmin[0].role}`);
-      }
     }
 
+    console.log("Данные для входа администратора:");
+    console.log(`Email: ${adminEmail}`);
+    console.log(`Пароль: ${adminPassword}`);
+    console.log("Роль: SUPER_ADMIN");
+
+    // Тест БД
     const [rows] = await connection.execute("SELECT 1 AS test");
     if (rows.length > 0) {
       console.log("База данных работает корректно!");
@@ -127,23 +138,25 @@ async function testDatabaseConnection() {
   } catch (error) {
     console.error("Ошибка подключения к базе данных:", error.message);
     if (error.code === "ECONNREFUSED") {
-      console.error("MySQL сервер не запущен или неверный хост/порт. Проверьте, что MySQL работает на", dbConfig.host, "порт", dbConfig.port || 3306);
+      console.error("MySQL сервер не запущен или неверный хост/порт.");
     }
   }
 }
 
 testDatabaseConnection();
 
-// Test endpoint
+// Тестовый эндпоинт
 app.get("/api/message", (req, res) => {
   res.json({ message: "Привет от бэкенда Ala-Too!" });
 });
 
-// Admin login endpoint
+// Эндпоинт для логина админа
 app.post("/api/admin/login", async (req, res) => {
   const { email, password } = req.body;
+  console.log("Попытка логина:", { email, password });
 
   if (!email || !password) {
+    console.error("Ошибка: email или пароль отсутствуют");
     return res.status(400).json({ error: "Email и пароль обязательны" });
   }
 
@@ -153,6 +166,7 @@ app.post("/api/admin/login", async (req, res) => {
       "SELECT id, first_name, last_name, email, phone, role, password, profile_picture AS photoUrl FROM users1 WHERE email = ?",
       [email]
     );
+    console.log("Результат запроса к БД:", rows.length > 0 ? "Пользователь найден" : "Пользователь не найден");
 
     if (rows.length === 0) {
       await connection.end();
@@ -161,14 +175,14 @@ app.post("/api/admin/login", async (req, res) => {
 
     const user = rows[0];
     if (!user.password) {
+      console.error("Ошибка: пароль пользователя не установлен");
       await connection.end();
       return res.status(500).json({ error: "Пароль пользователя не установлен" });
     }
 
-    console.log("Введенный пароль:", password); // Отладка
-    console.log("Хешированный пароль из базы:", user.password); // Отладка
+    console.log("Хешированный пароль из БД:", user.password);
     const isPasswordValid = await bcrypt.compare(password, user.password);
-    console.log("Результат сравнения пароля:", isPasswordValid); // Отладка
+    console.log("Результат сравнения пароля:", isPasswordValid);
 
     if (!isPasswordValid) {
       await connection.end();
@@ -187,22 +201,24 @@ app.post("/api/admin/login", async (req, res) => {
     };
 
     const token = jwt.sign({ id: user.id, role: user.role }, jwtSecret, { expiresIn: "1h" });
+    console.log("Логин успешен, токен сгенерирован");
 
     await connection.end();
     res.json({ message: "Авторизация успешна", user: userResponse, token });
   } catch (error) {
-    console.error("Ошибка при авторизации:", error);
+    console.error("Ошибка при авторизации:", error.message);
     res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
   }
 });
 
-// Get all users (protected)
+// Получение всех пользователей (защищённый)
 app.get("/api/users", authenticate, async (req, res) => {
   try {
     const connection = await mysql.createConnection(dbConfig);
     const [rows] = await connection.execute(
       "SELECT id, first_name, last_name, email, phone, role, profile_picture AS photoUrl FROM users1"
     );
+    console.log("Пользователи получены из БД:", rows.length);
     await connection.end();
     res.json(
       rows.map((user) => ({
@@ -212,14 +228,15 @@ app.get("/api/users", authenticate, async (req, res) => {
       }))
     );
   } catch (error) {
-    console.error("Error fetching users:", error);
+    console.error("Ошибка получения пользователей:", error.message);
     res.status(500).json({ error: "Внутренняя ошибка сервера" });
   }
 });
 
-// Create a new user (protected, only for SUPER_ADMIN)
+// Создание нового пользователя (защищённый, только SUPER_ADMIN)
 app.post("/api/users", authenticate, upload.single("photo"), async (req, res) => {
   if (req.user.role !== "SUPER_ADMIN") {
+    console.error("Доступ запрещён: не SUPER_ADMIN");
     return res.status(403).json({ error: "Доступ запрещен: требуется роль SUPER_ADMIN" });
   }
 
@@ -227,6 +244,7 @@ app.post("/api/users", authenticate, upload.single("photo"), async (req, res) =>
   const photo = req.file;
 
   if (!email || !name || !phone || !role || !password) {
+    console.error("Ошибка: не все поля заполнены");
     return res.status(400).json({ error: "Все поля обязательны" });
   }
 
@@ -243,15 +261,18 @@ app.post("/api/users", authenticate, upload.single("photo"), async (req, res) =>
         ContentType: photo.mimetype,
       };
       await s3Client.send(new PutObjectCommand(uploadParams));
+      console.log(`Фото загружено в S3: ${profile_picture}`);
     }
 
     const connection = await mysql.createConnection(dbConfig);
     const hashedPassword = await bcrypt.hash(password, 10);
+    console.log("Хеш пароля для нового пользователя:", hashedPassword);
 
     const [result] = await connection.execute(
       "INSERT INTO users1 (first_name, last_name, email, phone, role, password, profile_picture) VALUES (?, ?, ?, ?, ?, ?, ?)",
       [first_name, last_name, email, phone, role, hashedPassword, profile_picture]
     );
+    console.log("Новый пользователь создан, ID:", result.insertId);
 
     const newUser = {
       id: result.insertId,
@@ -267,14 +288,15 @@ app.post("/api/users", authenticate, upload.single("photo"), async (req, res) =>
     await connection.end();
     res.json(newUser);
   } catch (error) {
-    console.error("Ошибка создания пользователя:", error);
+    console.error("Ошибка создания пользователя:", error.message);
     res.status(500).json({ error: "Внутренняя ошибка сервера" });
   }
 });
 
-// Update a user (protected, only for SUPER_ADMIN)
+// Обновление пользователя (защищённый, только SUPER_ADMIN)
 app.put("/api/users/:id", authenticate, upload.single("photo"), async (req, res) => {
   if (req.user.role !== "SUPER_ADMIN") {
+    console.error("Доступ запрещён: не SUPER_ADMIN");
     return res.status(403).json({ error: "Доступ запрещен: требуется роль SUPER_ADMIN" });
   }
 
@@ -283,6 +305,7 @@ app.put("/api/users/:id", authenticate, upload.single("photo"), async (req, res)
   const photo = req.file;
 
   if (!email || !name || !phone || !role) {
+    console.error("Ошибка: не все поля заполнены");
     return res.status(400).json({ error: "Все поля обязательны" });
   }
 
@@ -295,6 +318,7 @@ app.put("/api/users/:id", authenticate, upload.single("photo"), async (req, res)
     const [existingUsers] = await connection.execute("SELECT profile_picture FROM users1 WHERE id = ?", [id]);
     if (existingUsers.length === 0) {
       await connection.end();
+      console.error("Пользователь не найден по ID:", id);
       return res.status(404).json({ error: "Пользователь не найден" });
     }
 
@@ -310,9 +334,11 @@ app.put("/api/users/:id", authenticate, upload.single("photo"), async (req, res)
         ContentType: photo.mimetype,
       };
       await s3Client.send(new PutObjectCommand(uploadParams));
+      console.log(`Новое фото загружено в S3: ${profile_picture}`);
 
       if (existingPhoto) {
         await s3Client.send(new DeleteObjectCommand({ Bucket: bucketName, Key: existingPhoto }));
+        console.log(`Старое фото удалено из S3: ${existingPhoto}`);
       }
     }
 
@@ -325,6 +351,7 @@ app.put("/api/users/:id", authenticate, upload.single("photo"), async (req, res)
       await connection.end();
       return res.status(404).json({ error: "Пользователь не найден" });
     }
+    console.log("Пользователь обновлён, ID:", id);
 
     const updatedUser = {
       id: parseInt(id),
@@ -340,14 +367,15 @@ app.put("/api/users/:id", authenticate, upload.single("photo"), async (req, res)
     await connection.end();
     res.json(updatedUser);
   } catch (error) {
-    console.error("Ошибка обновления пользователя:", error);
+    console.error("Ошибка обновления пользователя:", error.message);
     res.status(500).json({ error: "Внутренняя ошибка сервера" });
   }
 });
 
-// Delete a user (protected, only for SUPER_ADMIN)
+// Удаление пользователя (защищённый, только SUPER_ADMIN)
 app.delete("/api/users/:id", authenticate, async (req, res) => {
   if (req.user.role !== "SUPER_ADMIN") {
+    console.error("Доступ запрещён: не SUPER_ADMIN");
     return res.status(403).json({ error: "Доступ запрещен: требуется роль SUPER_ADMIN" });
   }
 
@@ -358,12 +386,14 @@ app.delete("/api/users/:id", authenticate, async (req, res) => {
     const [users] = await connection.execute("SELECT profile_picture FROM users1 WHERE id = ?", [id]);
     if (users.length === 0) {
       await connection.end();
+      console.error("Пользователь не найден по ID:", id);
       return res.status(404).json({ error: "Пользователь не найден" });
     }
 
     const profile_picture = users[0].profile_picture;
     if (profile_picture) {
       await s3Client.send(new DeleteObjectCommand({ Bucket: bucketName, Key: profile_picture }));
+      console.log(`Фото удалено из S3: ${profile_picture}`);
     }
 
     const [result] = await connection.execute("DELETE FROM users1 WHERE id = ?", [id]);
@@ -371,21 +401,23 @@ app.delete("/api/users/:id", authenticate, async (req, res) => {
       await connection.end();
       return res.status(404).json({ error: "Пользователь не найден" });
     }
+    console.log("Пользователь удалён, ID:", id);
 
     await connection.end();
     res.json({ message: "Пользователь успешно удален" });
   } catch (error) {
-    console.error("Ошибка удаления пользователя:", error);
+    console.error("Ошибка удаления пользователя:", error.message);
     res.status(500).json({ error: "Внутренняя ошибка сервера" });
   }
 });
 
-// Create a new option (protected, only for SUPER_ADMIN or REALTOR)
+// Создание новой опции (защищённый, SUPER_ADMIN или REALTOR)
 app.post("/api/options", authenticate, upload.fields([
   { name: "images", maxCount: 10 },
   { name: "document", maxCount: 1 },
 ]), async (req, res) => {
   if (!["SUPER_ADMIN", "REALTOR"].includes(req.user.role)) {
+    console.error("Доступ запрещён: не SUPER_ADMIN или REALTOR");
     return res.status(403).json({ error: "Доступ запрещен: требуется роль SUPER_ADMIN или REALTOR" });
   }
 
@@ -402,11 +434,12 @@ app.post("/api/options", authenticate, upload.fields([
   } : null;
 
   if (!type || !area || !price || !status || !owner || !address || !description || !curator) {
+    console.error("Ошибка: не все поля заполнены");
     return res.status(400).json({ error: "Все поля обязательны" });
   }
 
   try {
-    // Upload images to S3
+    // Загрузка изображений в S3
     for (const image of images) {
       const uploadParams = {
         Bucket: bucketName,
@@ -415,9 +448,10 @@ app.post("/api/options", authenticate, upload.fields([
         ContentType: image.mimetype,
       };
       await s3Client.send(new PutObjectCommand(uploadParams));
+      console.log(`Изображение загружено в S3: ${image.filename}`);
     }
 
-    // Upload document to S3 if present
+    // Загрузка документа в S3, если есть
     if (document) {
       const uploadParams = {
         Bucket: bucketName,
@@ -426,6 +460,7 @@ app.post("/api/options", authenticate, upload.fields([
         ContentType: document.mimetype,
       };
       await s3Client.send(new PutObjectCommand(uploadParams));
+      console.log(`Документ загружен в S3: ${document.filename}`);
     }
 
     const connection = await mysql.createConnection(dbConfig);
@@ -433,6 +468,7 @@ app.post("/api/options", authenticate, upload.fields([
       "INSERT INTO options (type, area, price, status, owner, address, description, curator, images, document, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())",
       [type, area, price, status, owner, address, description, curator, JSON.stringify(images.map(img => img.filename)), document ? document.filename : null]
     );
+    console.log("Новая опция создана, ID:", result.insertId);
 
     const newOption = {
       id: result.insertId,
@@ -453,14 +489,15 @@ app.post("/api/options", authenticate, upload.fields([
     await connection.end();
     res.json(newOption);
   } catch (error) {
-    console.error("Ошибка создания варианта:", error);
+    console.error("Ошибка создания опции:", error.message);
     res.status(500).json({ error: "Внутренняя ошибка сервера" });
   }
 });
 
-// Delete an option (protected, only for SUPER_ADMIN)
+// Удаление опции (защищённый, только SUPER_ADMIN)
 app.delete("/api/options/:id", authenticate, async (req, res) => {
   if (req.user.role !== "SUPER_ADMIN") {
+    console.error("Доступ запрещён: не SUPER_ADMIN");
     return res.status(403).json({ error: "Доступ запрещен: требуется роль SUPER_ADMIN" });
   }
 
@@ -471,6 +508,7 @@ app.delete("/api/options/:id", authenticate, async (req, res) => {
     const [options] = await connection.execute("SELECT images, document FROM options WHERE id = ?", [id]);
     if (options.length === 0) {
       await connection.end();
+      console.error("Опция не найдена по ID:", id);
       return res.status(404).json({ error: "Вариант не найден" });
     }
 
@@ -479,10 +517,12 @@ app.delete("/api/options/:id", authenticate, async (req, res) => {
       const imageFiles = JSON.parse(images);
       for (const img of imageFiles) {
         await s3Client.send(new DeleteObjectCommand({ Bucket: bucketName, Key: img }));
+        console.log(`Изображение удалено из S3: ${img}`);
       }
     }
     if (document) {
       await s3Client.send(new DeleteObjectCommand({ Bucket: bucketName, Key: document }));
+      console.log(`Документ удалён из S3: ${document}`);
     }
 
     const [result] = await connection.execute("DELETE FROM options WHERE id = ?", [id]);
@@ -490,22 +530,24 @@ app.delete("/api/options/:id", authenticate, async (req, res) => {
       await connection.end();
       return res.status(404).json({ error: "Вариант не найден" });
     }
+    console.log("Опция удалена, ID:", id);
 
     await connection.end();
     res.json({ message: "Вариант успешно удален" });
   } catch (error) {
-    console.error("Ошибка удаления варианта:", error);
+    console.error("Ошибка удаления опции:", error.message);
     res.status(500).json({ error: "Внутренняя ошибка сервера" });
   }
 });
 
-// Get all options (protected)
+// Получение всех опций (защищённый)
 app.get("/api/options", authenticate, async (req, res) => {
   try {
     const connection = await mysql.createConnection(dbConfig);
     const [rows] = await connection.execute(
       "SELECT id, type, area, price, status, owner, address, description, curator, images, document, created_at FROM options"
     );
+    console.log("Опции получены из БД:", rows.length);
 
     const options = rows.map((row) => ({
       ...row,
@@ -518,18 +560,19 @@ app.get("/api/options", authenticate, async (req, res) => {
     await connection.end();
     res.json(options);
   } catch (error) {
-    console.error("Ошибка получения вариантов:", error);
+    console.error("Ошибка получения опций:", error.message);
     res.status(500).json({ error: "Внутренняя ошибка сервера" });
   }
 });
 
-// Get all listings for AdminDashboard (protected)
+// Получение всех объявлений для AdminDashboard (защищённый)
 app.get("/api/listings", authenticate, async (req, res) => {
   try {
     const connection = await mysql.createConnection(dbConfig);
     const [rows] = await connection.execute(
       "SELECT id, type, area, price, status, address, created_at FROM options"
     );
+    console.log("Объявления получены из БД:", rows.length);
 
     const listings = rows.map((row) => ({
       id: row.id,
@@ -544,12 +587,12 @@ app.get("/api/listings", authenticate, async (req, res) => {
     await connection.end();
     res.json(listings);
   } catch (error) {
-    console.error("Ошибка получения объявлений:", error);
+    console.error("Ошибка получения объявлений:", error.message);
     res.status(500).json({ error: "Внутренняя ошибка сервера" });
   }
 });
 
-// Start server
+// Запуск сервера
 app.listen(port, () => {
   console.log(`Сервер запущен на http://localhost:${port}`);
   console.log(`Публичный доступ: ${publicDomain}:${port}`);
