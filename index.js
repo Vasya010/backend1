@@ -66,7 +66,7 @@ const dbConfig = {
   port: 3306,
 };
 
-// Test database connection and create initial user
+// Test database connection and create initial admin user
 async function testDatabaseConnection() {
   try {
     const connection = await mysql.createConnection(dbConfig);
@@ -91,14 +91,30 @@ async function testDatabaseConnection() {
 
     const [users] = await connection.execute("SELECT COUNT(*) AS count FROM users1");
     if (users[0].count === 0) {
-      console.log("Пользователи отсутствуют, создаем начального пользователя...");
-      const hashedPassword = await bcrypt.hash("admin123", 10); // Хешируем с 10 rounds
-      console.log("Хешированный пароль для admin123:", hashedPassword); // Для отладки
+      console.log("Администраторы отсутствуют, создаем начального администратора...");
+      const adminEmail = "admin@example.com";
+      const adminPassword = "admin123"; // Пароль для администратора
+      const hashedPassword = await bcrypt.hash(adminPassword, 10); // Хешируем пароль
+      console.log("Хешированный пароль для администратора:", hashedPassword); // Для отладки
       await connection.execute(
         "INSERT INTO users1 (first_name, last_name, email, phone, role, password) VALUES (?, ?, ?, ?, ?, ?)",
-        ["Admin", "User", "admin@example.com", "123456789", "SUPER_ADMIN", hashedPassword]
+        ["Admin", "User", adminEmail, "123456789", "SUPER_ADMIN", hashedPassword]
       );
-      console.log("Создан пользователь: email=admin@example.com, пароль=admin123 (хешированный), роль=SUPER_ADMIN");
+      console.log("Создан администратор. Данные для входа:");
+      console.log(`Email: ${adminEmail}`);
+      console.log(`Пароль: ${adminPassword}`);
+      console.log("Роль: SUPER_ADMIN");
+    } else {
+      console.log("Администратор уже существует. Проверяем данные...");
+      const [existingAdmin] = await connection.execute(
+        "SELECT email, role FROM users1 WHERE role = 'SUPER_ADMIN' LIMIT 1"
+      );
+      if (existingAdmin.length > 0) {
+        console.log("Существующий администратор:");
+        console.log(`Email: ${existingAdmin[0].email}`);
+        console.log("Пароль: (хешированный, используйте тот, что вы установили)");
+        console.log(`Роль: ${existingAdmin[0].role}`);
+      }
     }
 
     const [rows] = await connection.execute("SELECT 1 AS test");
