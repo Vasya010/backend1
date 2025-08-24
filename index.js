@@ -41,15 +41,33 @@ const storage = multer.diskStorage({
 const upload = multer({
   storage,
   fileFilter: (req, file, cb) => {
-    const filetypes = /jpeg|jpg|png/;
+    const filetypes = /jpeg|jpg|png|pdf|doc|docx/;
     const extname = filetypes.test(path.extname(file.originalname).toLowerCase());
     const mimetype = filetypes.test(file.mimetype);
     if (extname && mimetype) {
       return cb(null, true);
     }
-    cb(new Error("Only images (jpeg, jpg, png) are allowed"));
+    cb(new Error("Only images (jpeg, jpg, png) and documents (pdf, doc, docx) are allowed"));
   },
 });
+
+// Test database connection
+async function testDatabaseConnection() {
+  try {
+    const connection = await mysql.createConnection(dbConfig);
+    console.log("Подключение к базе данных cs51703_kgadmin успешно установлено!");
+    const [rows] = await connection.execute("SELECT 1 AS test");
+    if (rows.length > 0) {
+      console.log("База данных работает корректно!");
+    }
+    await connection.end();
+  } catch (error) {
+    console.error("Ошибка подключения к базе данных:", error.message);
+  }
+}
+
+// Run database connection test on server start
+testDatabaseConnection();
 
 // Test endpoint
 app.get("/api/message", (req, res) => {
@@ -66,8 +84,6 @@ app.post("/api/admin/login", async (req, res) => {
 
   try {
     const connection = await mysql.createConnection(dbConfig);
-
-    // Проверяем пользователя с ролью ADMIN или SUPER_ADMIN
     const [rows] = await connection.execute(
       "SELECT id, first_name, last_name, email, phone, role, password, profile_picture AS photoUrl FROM users1 WHERE email = ? AND role IN ('ADMIN', 'SUPER_ADMIN')",
       [email]
@@ -79,16 +95,17 @@ app.post("/api/admin/login", async (req, res) => {
     }
 
     const user = rows[0];
+    if (!user.password) {
+      await connection.end();
+      return res.status(500).json({ error: "Пароль пользователя не установлен" });
+    }
 
-    // Проверяем пароль
     const isPasswordValid = await bcrypt.compare(password, user.password);
-
     if (!isPasswordValid) {
       await connection.end();
       return res.status(401).json({ error: "Неверный пароль" });
     }
 
-    // Формируем ответ, исключая пароль
     const userResponse = {
       id: user.id,
       first_name: user.first_name,
@@ -104,7 +121,7 @@ app.post("/api/admin/login", async (req, res) => {
     res.json({ message: "Авторизация успешна", user: userResponse });
   } catch (error) {
     console.error("Ошибка при авторизации:", error);
-    res.status(500).json({ error: "Внутренняя ошибка сервера" });
+    res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
   }
 });
 
@@ -183,8 +200,6 @@ app.put("/api/users/:id", upload.single("photo"), async (req, res) => {
 
   try {
     const connection = await mysql.createConnection(dbConfig);
-
-    // Get existing user to check if photo needs to be updated or deleted
     const [existingUsers] = await connection.execute("SELECT profile_picture FROM users1 WHERE id = ?", [id]);
     if (existingUsers.length === 0) {
       await connection.end();
@@ -196,7 +211,6 @@ app.put("/api/users/:id", upload.single("photo"), async (req, res) => {
 
     if (photo) {
       profile_picture = photo.filename;
-      // Delete old photo if it exists
       if (existingPhoto) {
         fs.unlink(path.join(__dirname, "Uploads", existingPhoto), (err) => {
           if (err) console.error("Error deleting old photo:", err);
@@ -239,8 +253,6 @@ app.delete("/api/users/:id", async (req, res) => {
 
   try {
     const connection = await mysql.createConnection(dbConfig);
-
-    // Get user to delete their photo if it exists
     const [users] = await connection.execute("SELECT profile_picture FROM users1 WHERE id = ?", [id]);
     if (users.length === 0) {
       await connection.end();
@@ -272,16 +284,13 @@ app.delete("/api/users/:id", async (req, res) => {
 app.get("/api/raions", async (req, res) => {
   try {
     const connection = await mysql.createConnection(dbConfig);
-    // Fetch districts
     const [districts] = await connection.execute(
       "SELECT id, name, NULL AS parentRaionId, link FROM districts"
     );
-    // Fetch subdistricts
     const [subdistricts] = await connection.execute(
       "SELECT id, name, district_id AS parentRaionId, link FROM subdistricts"
     );
     await connection.end();
-    // Combine districts and subdistricts
     res.json([...districts, ...subdistricts]);
   } catch (error) {
     console.error("Error fetching districts and subdistricts:", error);
@@ -329,8 +338,6 @@ app.post("/api/subraions", async (req, res) => {
 
   try {
     const connection = await mysql.createConnection(dbConfig);
-
-    // Verify parent district exists
     const [parent] = await connection.execute("SELECT id FROM districts WHERE id = ?", [parentRaionId]);
     if (parent.length === 0) {
       await connection.end();
@@ -353,6 +360,110 @@ app.post("/api/subraions", async (req, res) => {
     res.json(newSubDistrict);
   } catch (error) {
     console.error("Error creating subdistrict:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// Get all options
+app.get("/api/options", async (req, res) => {
+  try {
+    const connection = await mysql.createConnection(dbConfig);
+    const [rows] = await connection.execute(
+      "SELECT id, type, area, price, status, owner, address, description, curator, images, document FROM options"
+    );
+
+    const options = rows.map((row) => ({
+      ...row,
+      images: row.images ? JSON.parse(row.images).map((img) => `http://${port}/Uploads/${img}`) : [],
+      document: row.document ? `http://${port}/Uploads/${row.document}` : null,
+    }));
+
+    await connection.end();
+    res.json(options);
+  } catch (error) {
+    console.error("Error fetching options:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// Create a new option
+app.post("/api/options", upload.fields([
+  { name: "images", maxCount: 10 },
+  { name: "document", maxCount: 1 },
+]), async (req, res) => {
+  const { type, area, price, status, owner, address, description, curator } = req.body;
+  const images = req.files["images"] ? req.files["images"].map((file) => file.filename) : [];
+  const document = req.files["document"] ? req.files["document"][0].filename : null;
+
+  if (!type || !area || !price || !status || !owner || !address || !description || !curator) {
+    return res.status(400).json({ error: "All fields are required" });
+  }
+
+  try {
+    const connection = await mysql.createConnection(dbConfig);
+    const [result] = await connection.execute(
+      "INSERT INTO options (type, area, price, status, owner, address, description, curator, images, document) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      [type, area, price, status, owner, address, description, curator, JSON.stringify(images), document]
+    );
+
+    const newOption = {
+      id: result.insertId,
+      type,
+      area,
+      price,
+      status,
+      owner,
+      address,
+      description,
+      curator,
+      images: images.map((img) => `http://${port}/Uploads/${img}`),
+      document: document ? `http://${port}/Uploads/${document}` : null,
+    };
+
+    await connection.end();
+    res.json(newOption);
+  } catch (error) {
+    console.error("Error creating option:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// Delete an option
+app.delete("/api/options/:id", async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    const connection = await mysql.createConnection(dbConfig);
+    const [options] = await connection.execute("SELECT images, document FROM options WHERE id = ?", [id]);
+    if (options.length === 0) {
+      await connection.end();
+      return res.status(404).json({ error: "Option not found" });
+    }
+
+    const { images, document } = options[0];
+    if (images) {
+      JSON.parse(images).forEach((img) => {
+        fs.unlink(path.join(__dirname, "Uploads", img), (err) => {
+          if (err) console.error("Error deleting image:", err);
+        });
+      });
+    }
+    if (document) {
+      fs.unlink(path.join(__dirname, "Uploads", document), (err) => {
+        if (err) console.error("Error deleting document:", err);
+      });
+    }
+
+    const [result] = await connection.execute("DELETE FROM options WHERE id = ?", [id]);
+    if (result.affectedRows === 0) {
+      await connection.end();
+      return res.status(404).json({ error: "Option not found" });
+    }
+
+    await connection.end();
+    res.json({ message: "Option deleted successfully" });
+  } catch (error) {
+    console.error("Error deleting option:", error);
     res.status(500).json({ error: "Internal server error" });
   }
 });
