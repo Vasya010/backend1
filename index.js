@@ -5,6 +5,7 @@ const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
 const multer = require("multer");
 const { S3Client, PutObjectCommand, DeleteObjectCommand } = require("@aws-sdk/client-s3");
+const path = require("path"); // Добавлен, так как он используется в коде
 
 const app = express();
 const port = 5000;
@@ -19,7 +20,7 @@ const s3Client = new S3Client({
     accessKeyId: "GIMZKRMOGP4F0MOTLVCE",
     secretAccessKey: "WvhFfIzzCkITUrXfD8JfoDne7LmBhnNzDuDBj89I",
   },
-  forcePathStyle: true, // Required for non-AWS S3-compatible services
+  forcePathStyle: true,
 });
 
 const bucketName = "a2c31109-3cf2c97b-aca1-42b0-a822-3e0ade279447";
@@ -28,7 +29,7 @@ const bucketName = "a2c31109-3cf2c97b-aca1-42b0-a822-3e0ade279447";
 app.use(cors());
 app.use(express.json());
 
-// Multer configuration for memory storage (temporary storage before S3 upload)
+// Multer configuration for memory storage
 const storage = multer.memoryStorage();
 const upload = multer({
   storage,
@@ -39,7 +40,7 @@ const upload = multer({
     if (extname && mimetype) {
       return cb(null, true);
     }
-    cb(new Error("Only images (jpeg, jpg, png) and documents (pdf, doc, docx) are allowed"));
+    cb(new Error("Разрешены только изображения (jpeg, jpg, png) и документы (pdf, doc, docx)"));
   },
 });
 
@@ -91,12 +92,13 @@ async function testDatabaseConnection() {
     const [users] = await connection.execute("SELECT COUNT(*) AS count FROM users1");
     if (users[0].count === 0) {
       console.log("Пользователи отсутствуют, создаем начального пользователя...");
-      const hashedPassword = await bcrypt.hash("admin123", 10);
+      const hashedPassword = await bcrypt.hash("admin123", 10); // Хешируем с 10 rounds
+      console.log("Хешированный пароль для admin123:", hashedPassword); // Для отладки
       await connection.execute(
         "INSERT INTO users1 (first_name, last_name, email, phone, role, password) VALUES (?, ?, ?, ?, ?, ?)",
         ["Admin", "User", "admin@example.com", "123456789", "SUPER_ADMIN", hashedPassword]
       );
-      console.log("Создан пользователь: email=admin@example.com, пароль=admin123, роль=SUPER_ADMIN");
+      console.log("Создан пользователь: email=admin@example.com, пароль=admin123 (хешированный), роль=SUPER_ADMIN");
     }
 
     const [rows] = await connection.execute("SELECT 1 AS test");
@@ -138,7 +140,7 @@ app.post("/api/admin/login", async (req, res) => {
 
     if (rows.length === 0) {
       await connection.end();
-      return res.status(401).json({ error: "Неверный email" });
+      return res.status(401).json({ error: "Неверный email или пользователь не найден" });
     }
 
     const user = rows[0];
@@ -147,7 +149,11 @@ app.post("/api/admin/login", async (req, res) => {
       return res.status(500).json({ error: "Пароль пользователя не установлен" });
     }
 
+    console.log("Введенный пароль:", password); // Отладка
+    console.log("Хешированный пароль из базы:", user.password); // Отладка
     const isPasswordValid = await bcrypt.compare(password, user.password);
+    console.log("Результат сравнения пароля:", isPasswordValid); // Отладка
+
     if (!isPasswordValid) {
       await connection.end();
       return res.status(401).json({ error: "Неверный пароль" });
@@ -191,7 +197,7 @@ app.get("/api/users", authenticate, async (req, res) => {
     );
   } catch (error) {
     console.error("Error fetching users:", error);
-    res.status(500).json({ error: "Internal server error" });
+    res.status(500).json({ error: "Внутренняя ошибка сервера" });
   }
 });
 
@@ -205,7 +211,7 @@ app.post("/api/users", authenticate, upload.single("photo"), async (req, res) =>
   const photo = req.file;
 
   if (!email || !name || !phone || !role || !password) {
-    return res.status(400).json({ error: "All fields are required" });
+    return res.status(400).json({ error: "Все поля обязательны" });
   }
 
   const [first_name, last_name = ""] = name.split(" ");
@@ -245,8 +251,8 @@ app.post("/api/users", authenticate, upload.single("photo"), async (req, res) =>
     await connection.end();
     res.json(newUser);
   } catch (error) {
-    console.error("Error creating user:", error);
-    res.status(500).json({ error: "Internal server error" });
+    console.error("Ошибка создания пользователя:", error);
+    res.status(500).json({ error: "Внутренняя ошибка сервера" });
   }
 });
 
@@ -261,7 +267,7 @@ app.put("/api/users/:id", authenticate, upload.single("photo"), async (req, res)
   const photo = req.file;
 
   if (!email || !name || !phone || !role) {
-    return res.status(400).json({ error: "All fields are required" });
+    return res.status(400).json({ error: "Все поля обязательны" });
   }
 
   const [first_name, last_name = ""] = name.split(" ");
@@ -273,7 +279,7 @@ app.put("/api/users/:id", authenticate, upload.single("photo"), async (req, res)
     const [existingUsers] = await connection.execute("SELECT profile_picture FROM users1 WHERE id = ?", [id]);
     if (existingUsers.length === 0) {
       await connection.end();
-      return res.status(404).json({ error: "User not found" });
+      return res.status(404).json({ error: "Пользователь не найден" });
     }
 
     const existingPhoto = existingUsers[0].profile_picture;
@@ -301,7 +307,7 @@ app.put("/api/users/:id", authenticate, upload.single("photo"), async (req, res)
 
     if (result.affectedRows === 0) {
       await connection.end();
-      return res.status(404).json({ error: "User not found" });
+      return res.status(404).json({ error: "Пользователь не найден" });
     }
 
     const updatedUser = {
@@ -318,8 +324,8 @@ app.put("/api/users/:id", authenticate, upload.single("photo"), async (req, res)
     await connection.end();
     res.json(updatedUser);
   } catch (error) {
-    console.error("Error updating user:", error);
-    res.status(500).json({ error: "Internal server error" });
+    console.error("Ошибка обновления пользователя:", error);
+    res.status(500).json({ error: "Внутренняя ошибка сервера" });
   }
 });
 
@@ -336,7 +342,7 @@ app.delete("/api/users/:id", authenticate, async (req, res) => {
     const [users] = await connection.execute("SELECT profile_picture FROM users1 WHERE id = ?", [id]);
     if (users.length === 0) {
       await connection.end();
-      return res.status(404).json({ error: "User not found" });
+      return res.status(404).json({ error: "Пользователь не найден" });
     }
 
     const profile_picture = users[0].profile_picture;
@@ -347,14 +353,14 @@ app.delete("/api/users/:id", authenticate, async (req, res) => {
     const [result] = await connection.execute("DELETE FROM users1 WHERE id = ?", [id]);
     if (result.affectedRows === 0) {
       await connection.end();
-      return res.status(404).json({ error: "User not found" });
+      return res.status(404).json({ error: "Пользователь не найден" });
     }
 
     await connection.end();
-    res.json({ message: "User deleted successfully" });
+    res.json({ message: "Пользователь успешно удален" });
   } catch (error) {
-    console.error("Error deleting user:", error);
-    res.status(500).json({ error: "Internal server error" });
+    console.error("Ошибка удаления пользователя:", error);
+    res.status(500).json({ error: "Внутренняя ошибка сервера" });
   }
 });
 
@@ -380,7 +386,7 @@ app.post("/api/options", authenticate, upload.fields([
   } : null;
 
   if (!type || !area || !price || !status || !owner || !address || !description || !curator) {
-    return res.status(400).json({ error: "All fields are required" });
+    return res.status(400).json({ error: "Все поля обязательны" });
   }
 
   try {
@@ -431,8 +437,8 @@ app.post("/api/options", authenticate, upload.fields([
     await connection.end();
     res.json(newOption);
   } catch (error) {
-    console.error("Error creating option:", error);
-    res.status(500).json({ error: "Internal server error" });
+    console.error("Ошибка создания варианта:", error);
+    res.status(500).json({ error: "Внутренняя ошибка сервера" });
   }
 });
 
@@ -449,7 +455,7 @@ app.delete("/api/options/:id", authenticate, async (req, res) => {
     const [options] = await connection.execute("SELECT images, document FROM options WHERE id = ?", [id]);
     if (options.length === 0) {
       await connection.end();
-      return res.status(404).json({ error: "Option not found" });
+      return res.status(404).json({ error: "Вариант не найден" });
     }
 
     const { images, document } = options[0];
@@ -466,14 +472,14 @@ app.delete("/api/options/:id", authenticate, async (req, res) => {
     const [result] = await connection.execute("DELETE FROM options WHERE id = ?", [id]);
     if (result.affectedRows === 0) {
       await connection.end();
-      return res.status(404).json({ error: "Option not found" });
+      return res.status(404).json({ error: "Вариант не найден" });
     }
 
     await connection.end();
-    res.json({ message: "Option deleted successfully" });
+    res.json({ message: "Вариант успешно удален" });
   } catch (error) {
-    console.error("Error deleting option:", error);
-    res.status(500).json({ error: "Internal server error" });
+    console.error("Ошибка удаления варианта:", error);
+    res.status(500).json({ error: "Внутренняя ошибка сервера" });
   }
 });
 
@@ -496,8 +502,8 @@ app.get("/api/options", authenticate, async (req, res) => {
     await connection.end();
     res.json(options);
   } catch (error) {
-    console.error("Error fetching options:", error);
-    res.status(500).json({ error: "Internal server error" });
+    console.error("Ошибка получения вариантов:", error);
+    res.status(500).json({ error: "Внутренняя ошибка сервера" });
   }
 });
 
@@ -522,8 +528,8 @@ app.get("/api/listings", authenticate, async (req, res) => {
     await connection.end();
     res.json(listings);
   } catch (error) {
-    console.error("Error fetching listings:", error);
-    res.status(500).json({ error: "Internal server error" });
+    console.error("Ошибка получения объявлений:", error);
+    res.status(500).json({ error: "Внутренняя ошибка сервера" });
   }
 });
 
