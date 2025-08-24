@@ -2,12 +2,15 @@ const express = require("express");
 const cors = require("cors");
 const mysql = require("mysql2/promise");
 const bcrypt = require("bcrypt");
+const jwt = require("jsonwebtoken");
 const multer = require("multer");
 const path = require("path");
 const fs = require("fs");
 
 const app = express();
 const port = 5000;
+const publicDomain = "https://vasya010-backend1-10db.twc1.net"; // Публичный домен для Timeweb
+const jwtSecret = "your_jwt_secret_123"; // Замените на свой секретный ключ
 
 // Middleware
 app.use(cors());
@@ -22,6 +25,7 @@ const dbConfig = {
   user: "cs51703_kgadmin",
   password: "Vasya11091109",
   database: "cs51703_kgadmin",
+  port: 3306, // Убедитесь, что порт правильный (по умолчанию 3306)
 };
 
 // Multer configuration for file uploads
@@ -51,18 +55,67 @@ const upload = multer({
   },
 });
 
-// Test database connection
+// JWT authentication middleware
+const authenticate = (req, res, next) => {
+  const token = req.headers.authorization?.split(" ")[1];
+  if (!token) return res.status(401).json({ error: "Токен отсутствует" });
+  try {
+    const decoded = jwt.verify(token, jwtSecret);
+    req.user = decoded;
+    next();
+  } catch (error) {
+    res.status(401).json({ error: "Неверный токен" });
+  }
+};
+
+// Test database connection and create initial user
 async function testDatabaseConnection() {
   try {
     const connection = await mysql.createConnection(dbConfig);
     console.log("Подключение к базе данных cs51703_kgadmin успешно установлено!");
+
+    // Проверка существования таблицы users1
+    const [tables] = await connection.execute("SHOW TABLES LIKE 'users1'");
+    if (tables.length === 0) {
+      console.log("Таблица users1 не существует, создаем...");
+      await connection.execute(`
+        CREATE TABLE users1 (
+          id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+          first_name VARCHAR(255) NOT NULL,
+          last_name VARCHAR(255) NOT NULL,
+          role VARCHAR(50) NOT NULL,
+          email VARCHAR(255) NOT NULL,
+          phone VARCHAR(255) NOT NULL,
+          profile_picture VARCHAR(255) DEFAULT NULL,
+          password VARCHAR(255) NOT NULL
+        ) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci
+      `);
+    }
+
+    // Проверка, есть ли пользователи в таблице
+    const [users] = await connection.execute("SELECT COUNT(*) AS count FROM users1");
+    if (users[0].count === 0) {
+      console.log("Пользователи отсутствуют, создаем начального пользователя...");
+      const hashedPassword = await bcrypt.hash("admin123", 10);
+      await connection.execute(
+        "INSERT INTO users1 (first_name, last_name, email, phone, role, password) VALUES (?, ?, ?, ?, ?, ?)",
+        ["Admin", "User", "admin@example.com", "123456789", "SUPER_ADMIN", hashedPassword]
+      );
+      console.log("Создан пользователь: email=admin@example.com, пароль=admin123, роль=SUPER_ADMIN");
+    }
+
     const [rows] = await connection.execute("SELECT 1 AS test");
     if (rows.length > 0) {
       console.log("База данных работает корректно!");
+      const [tablesList] = await connection.execute("SHOW TABLES");
+      console.log("Таблицы в базе данных:", tablesList.map((t) => t[`Tables_in_${dbConfig.database}`]));
     }
     await connection.end();
   } catch (error) {
     console.error("Ошибка подключения к базе данных:", error.message);
+    if (error.code === "ECONNREFUSED") {
+      console.error("MySQL сервер не запущен или неверный хост/порт. Проверьте, что MySQL работает на", dbConfig.host, "порт", dbConfig.port || 3306);
+    }
   }
 }
 
@@ -113,20 +166,22 @@ app.post("/api/admin/login", async (req, res) => {
       email: user.email,
       phone: user.phone,
       role: user.role,
-      photoUrl: user.photoUrl ? `http://localhost:${port}/Uploads/${user.photoUrl}` : null,
+      photoUrl: user.photoUrl ? `${publicDomain}/uploads/${user.photoUrl}` : null,
       name: `${user.first_name} ${user.last_name}`.trim(),
     };
 
+    const token = jwt.sign({ id: user.id, role: user.role }, jwtSecret, { expiresIn: "1h" });
+
     await connection.end();
-    res.json({ message: "Авторизация успешна", user: userResponse });
+    res.json({ message: "Авторизация успешна", user: userResponse, token });
   } catch (error) {
     console.error("Ошибка при авторизации:", error);
     res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
   }
 });
 
-// Get all users
-app.get("/api/users", async (req, res) => {
+// Get all users (protected)
+app.get("/api/users", authenticate, async (req, res) => {
   try {
     const connection = await mysql.createConnection(dbConfig);
     const [rows] = await connection.execute(
@@ -137,7 +192,7 @@ app.get("/api/users", async (req, res) => {
       rows.map((user) => ({
         ...user,
         name: `${user.first_name} ${user.last_name}`,
-        photoUrl: user.photoUrl ? `http://localhost:${port}/Uploads/${user.photoUrl}` : null,
+        photoUrl: user.photoUrl ? `${publicDomain}/uploads/${user.photoUrl}` : null,
       }))
     );
   } catch (error) {
@@ -146,8 +201,12 @@ app.get("/api/users", async (req, res) => {
   }
 });
 
-// Create a new user
-app.post("/api/users", upload.single("photo"), async (req, res) => {
+// Create a new user (protected, only for SUPER_ADMIN)
+app.post("/api/users", authenticate, upload.single("photo"), async (req, res) => {
+  if (req.user.role !== "SUPER_ADMIN") {
+    return res.status(403).json({ error: "Доступ запрещен: требуется роль SUPER_ADMIN" });
+  }
+
   const { email, name, phone, role, password } = req.body;
   const photo = req.file;
 
@@ -174,7 +233,7 @@ app.post("/api/users", upload.single("photo"), async (req, res) => {
       email,
       phone,
       role,
-      photoUrl: profile_picture ? `http://localhost:${port}/Uploads/${profile_picture}` : null,
+      photoUrl: profile_picture ? `${publicDomain}/uploads/${profile_picture}` : null,
       name: `${first_name} ${last_name}`.trim(),
     };
 
@@ -186,8 +245,12 @@ app.post("/api/users", upload.single("photo"), async (req, res) => {
   }
 });
 
-// Update a user
-app.put("/api/users/:id", upload.single("photo"), async (req, res) => {
+// Update a user (protected, only for SUPER_ADMIN)
+app.put("/api/users/:id", authenticate, upload.single("photo"), async (req, res) => {
+  if (req.user.role !== "SUPER_ADMIN") {
+    return res.status(403).json({ error: "Доступ запрещен: требуется роль SUPER_ADMIN" });
+  }
+
   const { id } = req.params;
   const { email, name, phone, role } = req.body;
   const photo = req.file;
@@ -235,7 +298,7 @@ app.put("/api/users/:id", upload.single("photo"), async (req, res) => {
       email,
       phone,
       role,
-      photoUrl: profile_picture ? `http://localhost:${port}/Uploads/${profile_picture}` : null,
+      photoUrl: profile_picture ? `${publicDomain}/uploads/${profile_picture}` : null,
       name: `${first_name} ${last_name}`.trim(),
     };
 
@@ -247,8 +310,12 @@ app.put("/api/users/:id", upload.single("photo"), async (req, res) => {
   }
 });
 
-// Delete a user
-app.delete("/api/users/:id", async (req, res) => {
+// Delete a user (protected, only for SUPER_ADMIN)
+app.delete("/api/users/:id", authenticate, async (req, res) => {
+  if (req.user.role !== "SUPER_ADMIN") {
+    return res.status(403).json({ error: "Доступ запрещен: требуется роль SUPER_ADMIN" });
+  }
+
   const { id } = req.params;
 
   try {
@@ -280,8 +347,8 @@ app.delete("/api/users/:id", async (req, res) => {
   }
 });
 
-// Get all districts and subdistricts
-app.get("/api/raions", async (req, res) => {
+// Get all districts and subdistricts (protected)
+app.get("/api/raions", authenticate, async (req, res) => {
   try {
     const connection = await mysql.createConnection(dbConfig);
     const [districts] = await connection.execute(
@@ -298,8 +365,12 @@ app.get("/api/raions", async (req, res) => {
   }
 });
 
-// Create a new district
-app.post("/api/raions", async (req, res) => {
+// Create a new district (protected, only for SUPER_ADMIN)
+app.post("/api/raions", authenticate, async (req, res) => {
+  if (req.user.role !== "SUPER_ADMIN") {
+    return res.status(403).json({ error: "Доступ запрещен: требуется роль SUPER_ADMIN" });
+  }
+
   const { name } = req.body;
 
   if (!name) {
@@ -328,8 +399,12 @@ app.post("/api/raions", async (req, res) => {
   }
 });
 
-// Create a new subdistrict
-app.post("/api/subraions", async (req, res) => {
+// Create a new subdistrict (protected, only for SUPER_ADMIN)
+app.post("/api/subraions", authenticate, async (req, res) => {
+  if (req.user.role !== "SUPER_ADMIN") {
+    return res.status(403).json({ error: "Доступ запрещен: требуется роль SUPER_ADMIN" });
+  }
+
   const { name, parentRaionId } = req.body;
 
   if (!name || !parentRaionId) {
@@ -364,8 +439,8 @@ app.post("/api/subraions", async (req, res) => {
   }
 });
 
-// Get all options
-app.get("/api/options", async (req, res) => {
+// Get all options (protected)
+app.get("/api/options", authenticate, async (req, res) => {
   try {
     const connection = await mysql.createConnection(dbConfig);
     const [rows] = await connection.execute(
@@ -374,8 +449,8 @@ app.get("/api/options", async (req, res) => {
 
     const options = rows.map((row) => ({
       ...row,
-      images: row.images ? JSON.parse(row.images).map((img) => `http://localhost:${port}/Uploads/${img}`) : [],
-      document: row.document ? `http://localhost:${port}/Uploads/${row.document}` : null,
+      images: row.images ? JSON.parse(row.images).map((img) => `${publicDomain}/uploads/${img}`) : [],
+      document: row.document ? `${publicDomain}/uploads/${row.document}` : null,
       date: new Date(row.created_at).toLocaleDateString('ru-RU'),
       time: new Date(row.created_at).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }),
     }));
@@ -388,11 +463,15 @@ app.get("/api/options", async (req, res) => {
   }
 });
 
-// Create a new option
-app.post("/api/options", upload.fields([
+// Create a new option (protected, only for SUPER_ADMIN or REALTOR)
+app.post("/api/options", authenticate, upload.fields([
   { name: "images", maxCount: 10 },
   { name: "document", maxCount: 1 },
 ]), async (req, res) => {
+  if (!["SUPER_ADMIN", "REALTOR"].includes(req.user.role)) {
+    return res.status(403).json({ error: "Доступ запрещен: требуется роль SUPER_ADMIN или REALTOR" });
+  }
+
   const { type, area, price, status, owner, address, description, curator } = req.body;
   const images = req.files["images"] ? req.files["images"].map((file) => file.filename) : [];
   const document = req.files["document"] ? req.files["document"][0].filename : null;
@@ -418,8 +497,8 @@ app.post("/api/options", upload.fields([
       address,
       description,
       curator,
-      images: images.map((img) => `http://localhost:${port}/Uploads/${img}`),
-      document: document ? `http://localhost:${port}/Uploads/${document}` : null,
+      images: images.map((img) => `${publicDomain}/uploads/${img}`),
+      document: document ? `${publicDomain}/uploads/${document}` : null,
       date: new Date().toLocaleDateString('ru-RU'),
       time: new Date().toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }),
     };
@@ -432,8 +511,12 @@ app.post("/api/options", upload.fields([
   }
 });
 
-// Delete an option
-app.delete("/api/options/:id", async (req, res) => {
+// Delete an option (protected, only for SUPER_ADMIN)
+app.delete("/api/options/:id", authenticate, async (req, res) => {
+  if (req.user.role !== "SUPER_ADMIN") {
+    return res.status(403).json({ error: "Доступ запрещен: требуется роль SUPER_ADMIN" });
+  }
+
   const { id } = req.params;
 
   try {
@@ -472,8 +555,8 @@ app.delete("/api/options/:id", async (req, res) => {
   }
 });
 
-// Get all listings for AdminDashboard
-app.get("/api/listings", async (req, res) => {
+// Get all listings for AdminDashboard (protected)
+app.get("/api/listings", authenticate, async (req, res) => {
   try {
     const connection = await mysql.createConnection(dbConfig);
     const [rows] = await connection.execute(
@@ -485,7 +568,7 @@ app.get("/api/listings", async (req, res) => {
       date: new Date(row.created_at).toLocaleDateString('ru-RU'),
       time: new Date(row.created_at).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }),
       area: row.area,
-      district: row.address, // Using address as district for display in AdminDashboard
+      district: row.address,
       price: row.price,
       status: row.status,
     }));
@@ -501,4 +584,5 @@ app.get("/api/listings", async (req, res) => {
 // Start server
 app.listen(port, () => {
   console.log(`Сервер запущен на http://localhost:${port}`);
+  console.log(`Публичный доступ: ${publicDomain}:${port}`);
 });
