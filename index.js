@@ -243,9 +243,16 @@ app.post("/api/users", authenticate, upload.single("photo"), async (req, res) =>
   const { email, name, phone, role, password } = req.body;
   const photo = req.file;
 
+  console.log("Входные данные для создания пользователя:", { email, name, phone, role, password, hasPhoto: !!photo });
+
   if (!email || !name || !phone || !role || !password) {
-    console.error("Ошибка: не все поля заполнены");
-    return res.status(400).json({ error: "Все поля обязательны" });
+    console.error("Ошибка: не все поля заполнены", { email, name, phone, role, password });
+    return res.status(400).json({ error: "Все поля, включая пароль, обязательны" });
+  }
+
+  if (typeof password !== 'string') {
+    console.error("Ошибка: пароль должен быть строкой", { password, type: typeof password });
+    return res.status(400).json({ error: "Пароль должен быть строкой" });
   }
 
   const [first_name, last_name = ""] = name.split(" ");
@@ -289,7 +296,7 @@ app.post("/api/users", authenticate, upload.single("photo"), async (req, res) =>
     res.json(newUser);
   } catch (error) {
     console.error("Ошибка создания пользователя:", error.message);
-    res.status(500).json({ error: "Внутренняя ошибка сервера" });
+    res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
   }
 });
 
@@ -303,6 +310,8 @@ app.put("/api/users/:id", authenticate, upload.single("photo"), async (req, res)
   const { id } = req.params;
   const { email, name, phone, role } = req.body;
   const photo = req.file;
+
+  console.log("Входные данные для обновления пользователя:", { id, email, name, phone, role, hasPhoto: !!photo });
 
   if (!email || !name || !phone || !role) {
     console.error("Ошибка: не все поля заполнены");
@@ -368,7 +377,7 @@ app.put("/api/users/:id", authenticate, upload.single("photo"), async (req, res)
     res.json(updatedUser);
   } catch (error) {
     console.error("Ошибка обновления пользователя:", error.message);
-    res.status(500).json({ error: "Внутренняя ошибка сервера" });
+    res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
   }
 });
 
@@ -407,7 +416,7 @@ app.delete("/api/users/:id", authenticate, async (req, res) => {
     res.json({ message: "Пользователь успешно удален" });
   } catch (error) {
     console.error("Ошибка удаления пользователя:", error.message);
-    res.status(500).json({ error: "Внутренняя ошибка сервера" });
+    res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
   }
 });
 
@@ -490,7 +499,7 @@ app.post("/api/options", authenticate, upload.fields([
     res.json(newOption);
   } catch (error) {
     console.error("Ошибка создания опции:", error.message);
-    res.status(500).json({ error: "Внутренняя ошибка сервера" });
+    res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
   }
 });
 
@@ -536,7 +545,7 @@ app.delete("/api/options/:id", authenticate, async (req, res) => {
     res.json({ message: "Вариант успешно удален" });
   } catch (error) {
     console.error("Ошибка удаления опции:", error.message);
-    res.status(500).json({ error: "Внутренняя ошибка сервера" });
+    res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
   }
 });
 
@@ -561,7 +570,7 @@ app.get("/api/options", authenticate, async (req, res) => {
     res.json(options);
   } catch (error) {
     console.error("Ошибка получения опций:", error.message);
-    res.status(500).json({ error: "Внутренняя ошибка сервера" });
+    res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
   }
 });
 
@@ -588,7 +597,7 @@ app.get("/api/listings", authenticate, async (req, res) => {
     res.json(listings);
   } catch (error) {
     console.error("Ошибка получения объявлений:", error.message);
-    res.status(500).json({ error: "Внутренняя ошибка сервера" });
+    res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
   }
 });
 
