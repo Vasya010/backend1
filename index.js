@@ -18,7 +18,7 @@ app.use("/uploads", express.static(path.join(__dirname, "Uploads")));
 
 // Database connection configuration
 const dbConfig = {
-  host: "localhost",
+  host: "vh452.timeweb.ru",
   user: "cs51703_kgadmin",
   password: "Vasya11091109",
   database: "cs51703_kgadmin",
