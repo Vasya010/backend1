@@ -18,7 +18,7 @@ app.use("/uploads", express.static(path.join(__dirname, "Uploads")));
 
 // Database connection configuration
 const dbConfig = {
-  host: "vh452.timeweb.ru",
+  host: "localhost",
   user: "cs51703_kgadmin",
   password: "Vasya11091109",
   database: "cs51703_kgadmin",
@@ -74,7 +74,7 @@ app.get("/api/message", (req, res) => {
   res.json({ message: "Привет от бэкенда Ala-Too!" });
 });
 
-// Admin login endpoint
+// Admin login endpoint (Updated to allow any role)
 app.post("/api/admin/login", async (req, res) => {
   const { email, password } = req.body;
 
@@ -85,13 +85,13 @@ app.post("/api/admin/login", async (req, res) => {
   try {
     const connection = await mysql.createConnection(dbConfig);
     const [rows] = await connection.execute(
-      "SELECT id, first_name, last_name, email, phone, role, password, profile_picture AS photoUrl FROM users1 WHERE email = ? AND role IN ('ADMIN', 'SUPER_ADMIN')",
+      "SELECT id, first_name, last_name, email, phone, role, password, profile_picture AS photoUrl FROM users1 WHERE email = ?",
       [email]
     );
 
     if (rows.length === 0) {
       await connection.end();
-      return res.status(401).json({ error: "Неверный email или пользователь не администратор" });
+      return res.status(401).json({ error: "Неверный email" });
     }
 
     const user = rows[0];
@@ -113,7 +113,7 @@ app.post("/api/admin/login", async (req, res) => {
       email: user.email,
       phone: user.phone,
       role: user.role,
-      photoUrl: user.photoUrl ? `http://${port}/Uploads/${user.photoUrl}` : null,
+      photoUrl: user.photoUrl ? `http://localhost:${port}/Uploads/${user.photoUrl}` : null,
       name: `${user.first_name} ${user.last_name}`.trim(),
     };
 
@@ -137,7 +137,7 @@ app.get("/api/users", async (req, res) => {
       rows.map((user) => ({
         ...user,
         name: `${user.first_name} ${user.last_name}`,
-        photoUrl: user.photoUrl ? `http://${port}/Uploads/${user.photoUrl}` : null,
+        photoUrl: user.photoUrl ? `http://localhost:${port}/Uploads/${user.photoUrl}` : null,
       }))
     );
   } catch (error) {
@@ -174,7 +174,7 @@ app.post("/api/users", upload.single("photo"), async (req, res) => {
       email,
       phone,
       role,
-      photoUrl: profile_picture ? `http://${port}/Uploads/${profile_picture}` : null,
+      photoUrl: profile_picture ? `http://localhost:${port}/Uploads/${profile_picture}` : null,
       name: `${first_name} ${last_name}`.trim(),
     };
 
@@ -235,7 +235,7 @@ app.put("/api/users/:id", upload.single("photo"), async (req, res) => {
       email,
       phone,
       role,
-      photoUrl: profile_picture ? `http://${port}/Uploads/${profile_picture}` : null,
+      photoUrl: profile_picture ? `http://localhost:${port}/Uploads/${profile_picture}` : null,
       name: `${first_name} ${last_name}`.trim(),
     };
 
@@ -374,8 +374,8 @@ app.get("/api/options", async (req, res) => {
 
     const options = rows.map((row) => ({
       ...row,
-      images: row.images ? JSON.parse(row.images).map((img) => `http://${port}/Uploads/${img}`) : [],
-      document: row.document ? `http://${port}/Uploads/${row.document}` : null,
+      images: row.images ? JSON.parse(row.images).map((img) => `http://localhost:${port}/Uploads/${img}`) : [],
+      document: row.document ? `http://localhost:${port}/Uploads/${row.document}` : null,
     }));
 
     await connection.end();
@@ -416,8 +416,8 @@ app.post("/api/options", upload.fields([
       address,
       description,
       curator,
-      images: images.map((img) => `http://${port}/Uploads/${img}`),
-      document: document ? `http://${port}/Uploads/${document}` : null,
+      images: images.map((img) => `http://localhost:${port}/Uploads/${img}`),
+      document: document ? `http://localhost:${port}/Uploads/${document}` : null,
     };
 
     await connection.end();
@@ -470,5 +470,5 @@ app.delete("/api/options/:id", async (req, res) => {
 
 // Start server
 app.listen(port, () => {
-  console.log(`Сервер запущен на http://:${port}`);
+  console.log(`Сервер запущен на http://localhost:${port}`);
 });
