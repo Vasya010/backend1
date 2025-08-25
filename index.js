@@ -13,6 +13,9 @@ const port = process.env.PORT || 5000;
 const publicDomain = process.env.PUBLIC_DOMAIN || "https://vasya010-backend1-10db.twc1.net";
 const jwtSecret = process.env.JWT_SECRET || "your_jwt_secret_123";
 
+// Valid roles for validation
+const VALID_ROLES = ['USER', 'ADMIN', 'SUPER_ADMIN', 'REALTOR'];
+
 // S3 Configuration
 const s3Client = new S3Client({
   region: process.env.S3_REGION || "ru-1",
@@ -133,13 +136,13 @@ async function testDatabaseConnection() {
           zhk_id VARCHAR(255) DEFAULT NULL,
           document_id INT NOT NULL DEFAULT 0,
           owner_name VARCHAR(255) DEFAULT NULL,
-          curator_id INT UNSIGNED DEFAULT NULL,
+          curator_ids TEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
           price DECIMAL(15,2) NOT NULL,
           unit VARCHAR(50) DEFAULT NULL,
           rukprice DECIMAL(15,2) NOT NULL,
           mkv DECIMAL(10,2) NOT NULL,
           room VARCHAR(10) DEFAULT NULL,
-          phone VARCHAR(50) DEFAULT NULL,
+          owner_phone VARCHAR(50) DEFAULT NULL,
           district_id VARCHAR(255) DEFAULT NULL,
           subdistrict_id VARCHAR(255) DEFAULT NULL,
           address TEXT NOT NULL,
@@ -154,10 +157,31 @@ async function testDatabaseConnection() {
           status VARCHAR(50) DEFAULT NULL,
           owner_id INT DEFAULT NULL,
           etaj INT NOT NULL,
-          etajnost INT NOT NULL,
-          FOREIGN KEY (curator_id) REFERENCES users1(id) ON DELETE SET NULL
+          etajnost INT NOT NULL
         ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
       `);
+    } else {
+      console.log("Migrating properties table...");
+      // Check if phone column exists and rename to owner_phone
+      const [columns] = await connection.execute("SHOW COLUMNS FROM properties LIKE 'phone'");
+      if (columns.length > 0) {
+        await connection.execute("ALTER TABLE properties CHANGE COLUMN phone owner_phone VARCHAR(50) DEFAULT NULL");
+      }
+      // Check if curator_id exists and replace with curator_ids
+      const [curatorIdColumn] = await connection.execute("SHOW COLUMNS FROM properties LIKE 'curator_id'");
+      if (curatorIdColumn.length > 0) {
+        // Drop foreign key if it exists
+        const [constraints] = await connection.execute("SELECT CONSTRAINT_NAME FROM information_schema.TABLE_CONSTRAINTS WHERE TABLE_NAME = 'properties' AND CONSTRAINT_TYPE = 'FOREIGN KEY'");
+        if (constraints.length > 0) {
+          for (const constraint of constraints) {
+            await connection.execute(`ALTER TABLE properties DROP FOREIGN KEY ${constraint.CONSTRAINT_NAME}`);
+          }
+        }
+        // Migrate curator_id to curator_ids
+        await connection.execute("ALTER TABLE properties ADD COLUMN curator_ids TEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL");
+        await connection.execute("UPDATE properties SET curator_ids = CAST(curator_id AS CHAR) WHERE curator_id IS NOT NULL");
+        await connection.execute("ALTER TABLE properties DROP COLUMN curator_id");
+      }
     }
 
     // Create jk table
@@ -342,6 +366,10 @@ app.post("/api/users", authenticate, upload.single("photo"), async (req, res) =>
     return res.status(400).json({ error: "All fields (email, name, phone, role, password) are required" });
   }
 
+  if (!VALID_ROLES.includes(role)) {
+    return res.status(400).json({ error: `Invalid role. Must be one of: ${VALID_ROLES.join(', ')}` });
+  }
+
   const [first_name, last_name = ""] = name.split(" ");
   const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
   const profile_picture = photo ? `${uniqueSuffix}${path.extname(photo.originalname)}` : null;
@@ -405,6 +433,10 @@ app.put("/api/users/:id", authenticate, upload.single("photo"), async (req, res)
 
   if (!email || !name || !phone || !role) {
     return res.status(400).json({ error: "All fields (email, name, phone, role) are required" });
+  }
+
+  if (!VALID_ROLES.includes(role)) {
+    return res.status(400).json({ error: `Invalid role. Must be one of: ${VALID_ROLES.join(', ')}` });
   }
 
   const [first_name, last_name = ""] = name.split(" ");
@@ -549,7 +581,7 @@ app.post("/api/properties", authenticate, upload.fields([
     return res.status(403).json({ error: "Access denied: SUPER_ADMIN or REALTOR role required" });
   }
 
-  const { type_id, condition, series, zhk_id, owner_name, curator_id, price, unit, rukprice, mkv, room, phone, district_id, subdistrict_id, address, notes, description, status, owner_id, etaj, etajnost } = req.body;
+  const { type_id, condition, series, zhk_id, owner_name, curator_ids, price, unit, rukprice, mkv, room, owner_phone, district_id, subdistrict_id, address, notes, description, status, owner_id, etaj, etajnost } = req.body;
   const photos = req.files["photos"] ? req.files["photos"].map(file => ({
     filename: `${Date.now()}-${Math.round(Math.random() * 1e9)}${path.extname(file.originalname)}`,
     buffer: file.buffer,
@@ -569,8 +601,8 @@ app.post("/api/properties", authenticate, upload.fields([
     return res.status(400).json({ error: "Fields price, rukprice, mkv, etaj, etajnost must be numeric" });
   }
 
-  let finalCuratorId = curator_id || (req.user.role === "REALTOR" ? req.user.id : null);
-  if (req.user.role === "REALTOR" && curator_id && curator_id != req.user.id) {
+  let finalCuratorIds = curator_ids || (req.user.role === "REALTOR" ? req.user.id.toString() : null);
+  if (req.user.role === "REALTOR" && curator_ids && curator_ids !== req.user.id.toString()) {
     return res.status(403).json({ error: "Realtor can only assign themselves as curator" });
   }
 
@@ -604,18 +636,21 @@ app.post("/api/properties", authenticate, upload.fields([
       }
     }
 
-    // Validate curator_id
+    // Validate curator_ids
     let curatorName = null;
-    if (finalCuratorId) {
-      const [curatorCheck] = await connection.execute(
-        "SELECT id, CONCAT(first_name, ' ', last_name) AS curator_name FROM users1 WHERE id = ?",
-        [finalCuratorId]
-      );
-      if (curatorCheck.length === 0) {
-        connection.release();
-        return res.status(400).json({ error: "Invalid curator ID" });
+    if (finalCuratorIds) {
+      const curatorIdArray = finalCuratorIds.split(",").map(id => parseInt(id.trim())).filter(id => !isNaN(id));
+      if (curatorIdArray.length > 0) {
+        const [curatorCheck] = await connection.execute(
+          "SELECT id, CONCAT(first_name, ' ', last_name) AS curator_name FROM users1 WHERE id IN (?)",
+          [curatorIdArray]
+        );
+        if (curatorCheck.length === 0) {
+          connection.release();
+          return res.status(400).json({ error: "Invalid curator IDs" });
+        }
+        curatorName = curatorCheck.map(c => c.curator_name).join(", ");
       }
-      curatorName = curatorCheck[0].curator_name;
     }
 
     // Upload files to S3
@@ -640,7 +675,7 @@ app.post("/api/properties", authenticate, upload.fields([
     const photosJson = JSON.stringify(photos.map(img => img.filename));
     const [result] = await connection.execute(
       `INSERT INTO properties (
-        type_id, \`condition\`, series, zhk_id, document_id, owner_name, curator_id, price, unit, rukprice, mkv, room, phone, 
+        type_id, \`condition\`, series, zhk_id, document_id, owner_name, curator_ids, price, unit, rukprice, mkv, room, owner_phone, 
         district_id, subdistrict_id, address, notes, description, photos, document, status, owner_id, etaj, etajnost
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
@@ -650,13 +685,13 @@ app.post("/api/properties", authenticate, upload.fields([
         zhk_id || null,
         0,
         owner_name || null,
-        finalCuratorId,
+        finalCuratorIds,
         price,
         unit || null,
         rukprice,
         mkv,
         room || null,
-        phone || null,
+        owner_phone || null,
         district_id || null,
         subdistrict_id || null,
         address,
@@ -679,14 +714,14 @@ app.post("/api/properties", authenticate, upload.fields([
       zhk_id,
       document_id: 0,
       owner_name,
-      curator_id: finalCuratorId,
+      curator_ids: finalCuratorIds,
       curator_name: curatorName || null,
       price,
       unit,
       rukprice,
       mkv,
       room,
-      phone,
+      owner_phone,
       district_id,
       subdistrict_id,
       address,
@@ -720,7 +755,7 @@ app.put("/api/properties/:id", authenticate, upload.fields([
   }
 
   const { id } = req.params;
-  const { type_id, condition, series, zhk_id, owner_name, curator_id, price, unit, rukprice, mkv, room, phone, district_id, subdistrict_id, address, notes, description, status, owner_id, etaj, etajnost, existingPhotos } = req.body;
+  const { type_id, condition, series, zhk_id, owner_name, curator_ids, price, unit, rukprice, mkv, room, owner_phone, district_id, subdistrict_id, address, notes, description, status, owner_id, etaj, etajnost, existingPhotos } = req.body;
   const photos = req.files["photos"] ? req.files["photos"].map(file => ({
     filename: `${Date.now()}-${Math.round(Math.random() * 1e9)}${path.extname(file.originalname)}`,
     buffer: file.buffer,
@@ -740,21 +775,21 @@ app.put("/api/properties/:id", authenticate, upload.fields([
     return res.status(400).json({ error: "Fields price, rukprice, mkv, etaj, etajnost must be numeric" });
   }
 
-  let finalCuratorId = curator_id || (req.user.role === "REALTOR" ? req.user.id : null);
-  if (req.user.role === "REALTOR" && curator_id && curator_id != req.user.id) {
+  let finalCuratorIds = curator_ids || (req.user.role === "REALTOR" ? req.user.id.toString() : null);
+  if (req.user.role === "REALTOR" && curator_ids && curator_ids !== req.user.id.toString()) {
     return res.status(403).json({ error: "Realtor can only assign themselves as curator" });
   }
 
   try {
     const connection = await pool.getConnection();
-    const [existingProperties] = await connection.execute("SELECT photos, document, curator_id FROM properties WHERE id = ?", [id]);
+    const [existingProperties] = await connection.execute("SELECT photos, document, curator_ids FROM properties WHERE id = ?", [id]);
     if (existingProperties.length === 0) {
       connection.release();
       return res.status(404).json({ error: "Property not found" });
     }
 
     const existingProperty = existingProperties[0];
-    if (req.user.role === "REALTOR" && existingProperty.curator_id && existingProperty.curator_id != req.user.id) {
+    if (req.user.role === "REALTOR" && existingProperty.curator_ids && !existingProperty.curator_ids.split(",").includes(req.user.id.toString())) {
       connection.release();
       return res.status(403).json({ error: "You do not have permission to edit this property" });
     }
@@ -786,18 +821,21 @@ app.put("/api/properties/:id", authenticate, upload.fields([
       }
     }
 
-    // Validate curator_id
+    // Validate curator_ids
     let curatorName = null;
-    if (finalCuratorId) {
-      const [curatorCheck] = await connection.execute(
-        "SELECT id, CONCAT(first_name, ' ', last_name) AS curator_name FROM users1 WHERE id = ?",
-        [finalCuratorId]
-      );
-      if (curatorCheck.length === 0) {
-        connection.release();
-        return res.status(400).json({ error: "Invalid curator ID" });
+    if (finalCuratorIds) {
+      const curatorIdArray = finalCuratorIds.split(",").map(id => parseInt(id.trim())).filter(id => !isNaN(id));
+      if (curatorIdArray.length > 0) {
+        const [curatorCheck] = await connection.execute(
+          "SELECT id, CONCAT(first_name, ' ', last_name) AS curator_name FROM users1 WHERE id IN (?)",
+          [curatorIdArray]
+        );
+        if (curatorCheck.length === 0) {
+          connection.release();
+          return res.status(400).json({ error: "Invalid curator IDs" });
+        }
+        curatorName = curatorCheck.map(c => c.curator_name).join(", ");
       }
-      curatorName = curatorCheck[0].curator_name;
     }
 
     // Handle photos
@@ -866,7 +904,7 @@ app.put("/api/properties/:id", authenticate, upload.fields([
 
     await connection.execute(
       `UPDATE properties SET
-        type_id = ?, \`condition\` = ?, series = ?, zhk_id = ?, document_id = ?, owner_name = ?, curator_id = ?, price = ?, unit = ?, rukprice = ?, mkv = ?, room = ?, phone = ?,
+        type_id = ?, \`condition\` = ?, series = ?, zhk_id = ?, document_id = ?, owner_name = ?, curator_ids = ?, price = ?, unit = ?, rukprice = ?, mkv = ?, room = ?, owner_phone = ?,
         district_id = ?, subdistrict_id = ?, address = ?, notes = ?, description = ?, photos = ?, document = ?, status = ?, owner_id = ?, etaj = ?, etajnost = ?
         WHERE id = ?`,
       [
@@ -876,13 +914,13 @@ app.put("/api/properties/:id", authenticate, upload.fields([
         zhk_id || null,
         0,
         owner_name || null,
-        finalCuratorId,
+        finalCuratorIds,
         price,
         unit || null,
         rukprice,
         mkv,
         room || null,
-        phone || null,
+        owner_phone || null,
         district_id || null,
         subdistrict_id || null,
         address,
@@ -906,14 +944,14 @@ app.put("/api/properties/:id", authenticate, upload.fields([
       zhk_id,
       document_id: 0,
       owner_name,
-      curator_id: finalCuratorId,
+      curator_ids: finalCuratorIds,
       curator_name: curatorName || null,
       price,
       unit,
       rukprice,
       mkv,
       room,
-      phone,
+      owner_phone,
       district_id,
       subdistrict_id,
       address,
@@ -947,14 +985,14 @@ app.delete("/api/properties/:id", authenticate, async (req, res) => {
 
   try {
     const connection = await pool.getConnection();
-    const [properties] = await connection.execute("SELECT photos, document, curator_id FROM properties WHERE id = ?", [id]);
+    const [properties] = await connection.execute("SELECT photos, document, curator_ids FROM properties WHERE id = ?", [id]);
     if (properties.length === 0) {
       connection.release();
       return res.status(404).json({ error: "Property not found" });
     }
 
     const existingProperty = properties[0];
-    if (req.user.role === "REALTOR" && existingProperty.curator_id && existingProperty.curator_id != req.user.id) {
+    if (req.user.role === "REALTOR" && existingProperty.curator_ids && !existingProperty.curator_ids.split(",").includes(req.user.id.toString())) {
       connection.release();
       return res.status(403).json({ error: "You do not have permission to delete this property" });
     }
@@ -998,9 +1036,10 @@ app.get("/api/properties", authenticate, async (req, res) => {
   try {
     const connection = await pool.getConnection();
     const [rows] = await connection.execute(
-      `SELECT p.*, CONCAT(u.first_name, ' ', u.last_name) AS curator_name
+      `SELECT p.*, GROUP_CONCAT(CONCAT(u.first_name, ' ', u.last_name)) AS curator_name
        FROM properties p
-       LEFT JOIN users1 u ON p.curator_id = u.id`
+       LEFT JOIN users1 u ON FIND_IN_SET(u.id, p.curator_ids)
+       GROUP BY p.id`
     );
 
     const properties = rows.map(row => {
@@ -1084,21 +1123,24 @@ app.patch("/api/properties/redirect", authenticate, async (req, res) => {
     return res.status(403).json({ error: "Access denied: SUPER_ADMIN role required" });
   }
 
-  const { propertyIds, curator_id } = req.body;
+  const { propertyIds, curator_ids } = req.body;
 
-  if (!Array.isArray(propertyIds) || !curator_id) {
-    return res.status(400).json({ error: "propertyIds must be an array, curator_id is required" });
+  if (!Array.isArray(propertyIds) || !curator_ids) {
+    return res.status(400).json({ error: "propertyIds must be an array, curator_ids is required" });
   }
 
   try {
     const connection = await pool.getConnection();
-    const [curatorCheck] = await connection.execute(
-      "SELECT id, CONCAT(first_name, ' ', last_name) AS curator_name FROM users1 WHERE id = ?",
-      [curator_id]
-    );
-    if (curatorCheck.length === 0) {
-      connection.release();
-      return res.status(400).json({ error: "Invalid curator ID" });
+    const curatorIdArray = curator_ids.split(",").map(id => parseInt(id.trim())).filter(id => !isNaN(id));
+    if (curatorIdArray.length > 0) {
+      const [curatorCheck] = await connection.execute(
+        "SELECT id, CONCAT(first_name, ' ', last_name) AS curator_name FROM users1 WHERE id IN (?)",
+        [curatorIdArray]
+      );
+      if (curatorCheck.length === 0) {
+        connection.release();
+        return res.status(400).json({ error: "Invalid curator IDs" });
+      }
     }
 
     const [existingProperties] = await connection.execute(
@@ -1111,8 +1153,8 @@ app.patch("/api/properties/redirect", authenticate, async (req, res) => {
     }
 
     const [result] = await connection.execute(
-      "UPDATE properties SET curator_id = ? WHERE id IN (?)",
-      [curator_id, propertyIds]
+      "UPDATE properties SET curator_ids = ? WHERE id IN (?)",
+      [curator_ids, propertyIds]
     );
 
     connection.release();
