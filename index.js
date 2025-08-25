@@ -572,6 +572,7 @@ app.delete("/api/users/:id", authenticate, async (req, res) => {
 });
 
 // Получение всех ЖК (защищено)
+// Получение всех ЖК (защищено)
 app.get("/api/jk", authenticate, async (req, res) => {
   try {
     const connection = await pool.getConnection();
@@ -581,6 +582,184 @@ app.get("/api/jk", authenticate, async (req, res) => {
     res.json(rows);
   } catch (error) {
     console.error("Ошибка получения ЖК:", error.message);
+    res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
+  }
+});
+
+
+
+// Создание нового ЖК (защищено, только SUPER_ADMIN)
+app.post("/api/jk", authenticate, upload.single("photo"), async (req, res) => {
+  if (req.user.role !== "SUPER_ADMIN") {
+    console.error("Доступ запрещен: Требуется роль SUPER_ADMIN");
+    return res.status(403).json({ error: "Доступ запрещен: Требуется роль SUPER_ADMIN" });
+  }
+
+  const { name, address, developer, apartments, status } = req.body;
+  const photo = req.file;
+
+  if (!name || !address || !developer || !apartments || !status) {
+    console.error("Ошибка: Не все обязательные поля предоставлены");
+    return res.status(400).json({ error: "Все поля (name, address, developer, apartments, status) обязательны" });
+  }
+
+  const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
+  const photoFilename = photo ? `${uniqueSuffix}${path.extname(photo.originalname)}` : null;
+
+  try {
+    const connection = await pool.getConnection();
+
+    if (photo) {
+      const uploadParams = {
+        Bucket: bucketName,
+        Key: photoFilename,
+        Body: photo.buffer,
+        ContentType: photo.mimetype,
+      };
+      await s3Client.send(new PutObjectCommand(uploadParams));
+      console.log(`Фото загружено в S3: ${photoFilename}`);
+    }
+
+    const [result] = await connection.execute(
+      "INSERT INTO jk (name, address, developer, apartments, status, photo) VALUES (?, ?, ?, ?, ?, ?)",
+      [name, address, developer, apartments, status, photoFilename]
+    );
+
+    console.log("Создан новый ЖК, ID:", result.insertId);
+    connection.release();
+
+    const newJk = {
+      id: result.insertId,
+      name,
+      address,
+      developer,
+      apartments,
+      status,
+      photo: photoFilename ? `https://s3.twcstorage.ru/${bucketName}/${photoFilename}` : null,
+    };
+
+    res.json(newJk);
+  } catch (error) {
+    console.error("Ошибка создания ЖК:", error.message);
+    res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
+  }
+});
+
+// Обновление ЖК (защищено, только SUPER_ADMIN)
+app.put("/api/jk/:id", authenticate, upload.single("photo"), async (req, res) => {
+  if (req.user.role !== "SUPER_ADMIN") {
+    console.error("Доступ запрещен: Требуется роль SUPER_ADMIN");
+    return res.status(403).json({ error: "Доступ запрещен: Требуется роль SUPER_ADMIN" });
+  }
+
+  const { id } = req.params;
+  const { name, address, developer, apartments, status } = req.body;
+  const photo = req.file;
+
+  if (!name || !address || !developer || !apartments || !status) {
+    console.error("Ошибка: Не все обязательные поля предоставлены");
+    return res.status(400).json({ error: "Все поля (name, address, developer, apartments, status) обязательны" });
+  }
+
+  const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
+  let photoFilename = null;
+
+  try {
+    const connection = await pool.getConnection();
+    const [existingJk] = await connection.execute("SELECT photo FROM jk WHERE id = ?", [id]);
+
+    if (existingJk.length === 0) {
+      connection.release();
+      console.error("ЖК не найден по ID:", id);
+      return res.status(404).json({ error: "ЖК не найден" });
+    }
+
+    const existingPhoto = existingJk[0].photo;
+    photoFilename = existingPhoto;
+
+    if (photo) {
+      photoFilename = `${uniqueSuffix}${path.extname(photo.originalname)}`;
+      const uploadParams = {
+        Bucket: bucketName,
+        Key: photoFilename,
+        Body: photo.buffer,
+        ContentType: photo.mimetype,
+      };
+      await s3Client.send(new PutObjectCommand(uploadParams));
+      console.log(`Новое фото загружено в S3: ${photoFilename}`);
+
+      if (existingPhoto) {
+        await s3Client.send(new DeleteObjectCommand({ Bucket: bucketName, Key: existingPhoto }));
+        console.log(`Старое фото удалено из S3: ${existingPhoto}`);
+      }
+    }
+
+    const [result] = await connection.execute(
+      "UPDATE jk SET name = ?, address = ?, developer = ?, apartments = ?, status = ?, photo = ? WHERE id = ?",
+      [name, address, developer, apartments, status, photoFilename, id]
+    );
+
+    if (result.affectedRows === 0) {
+      connection.release();
+      return res.status(404).json({ error: "ЖК не найден" });
+    }
+
+    console.log("ЖК обновлен, ID:", id);
+    connection.release();
+
+    const updatedJk = {
+      id: parseInt(id),
+      name,
+      address,
+      developer,
+      apartments,
+      status,
+      photo: photoFilename ? `https://s3.twcstorage.ru/${bucketName}/${photoFilename}` : null,
+    };
+
+    res.json(updatedJk);
+  } catch (error) {
+    console.error("Ошибка обновления ЖК:", error.message);
+    res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
+  }
+});
+
+// Удаление ЖК (защищено, только SUPER_ADMIN)
+app.delete("/api/jk/:id", authenticate, async (req, res) => {
+  if (req.user.role !== "SUPER_ADMIN") {
+    console.error("Доступ запрещен: Требуется роль SUPER_ADMIN");
+    return res.status(403).json({ error: "Доступ запрещен: Требуется роль SUPER_ADMIN" });
+  }
+
+  const { id } = req.params;
+
+  try {
+    const connection = await pool.getConnection();
+    const [jk] = await connection.execute("SELECT photo FROM jk WHERE id = ?", [id]);
+
+    if (jk.length === 0) {
+      connection.release();
+      console.error("ЖК не найден по ID:", id);
+      return res.status(404).json({ error: "ЖК не найден" });
+    }
+
+    const photoFilename = jk[0].photo;
+    if (photoFilename) {
+      await s3Client.send(new DeleteObjectCommand({ Bucket: bucketName, Key: photoFilename }));
+      console.log(`Фото удалено из S3: ${photoFilename}`);
+    }
+
+    const [result] = await connection.execute("DELETE FROM jk WHERE id = ?", [id]);
+    if (result.affectedRows === 0) {
+      connection.release();
+      return res.status(404).json({ error: "ЖК не найден" });
+    }
+
+    console.log("ЖК удален, ID:", id);
+    connection.release();
+    res.json({ message: "ЖК успешно удален" });
+  } catch (error) {
+    console.error("Ошибка удаления ЖК:", error.message);
     res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
   }
 });
