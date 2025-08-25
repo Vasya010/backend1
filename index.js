@@ -97,31 +97,48 @@ const authenticate = async (req, res, next) => {
 
 // Функция для получения имен кураторов по массиву curator_ids
 async function getCuratorNames(curatorIds, connection) {
-  if (!curatorIds) return ['Не указан'];
+  if (!curatorIds || curatorIds.trim() === '' || curatorIds === '[]') {
+    return ['Не указан'];
+  }
+
   let curatorIdArray;
   try {
     curatorIdArray = JSON.parse(curatorIds);
     if (!Array.isArray(curatorIdArray)) {
-      curatorIdArray = [curatorIds];
+      console.warn(`curator_ids не является массивом: ${curatorIds}, преобразование в массив`);
+      curatorIdArray = [curatorIds.toString()];
     }
   } catch (error) {
     console.warn(`Ошибка парсинга curator_ids: ${curatorIds}, Ошибка: ${error.message}`);
-    curatorIdArray = [curatorIds];
+    curatorIdArray = [curatorIds.toString()];
   }
 
-  if (curatorIdArray.length === 0) return ['Не указан'];
+  // Filter out invalid or non-numeric IDs
+  curatorIdArray = curatorIdArray
+    .map(id => id.toString())
+    .filter(id => id && !isNaN(parseInt(id)));
 
-  const [curators] = await connection.execute(
-    "SELECT id, CONCAT(first_name, ' ', last_name) AS curator_name FROM users1 WHERE id IN (?)",
-    [curatorIdArray]
-  );
+  if (curatorIdArray.length === 0) {
+    console.warn("Нет валидных curator_ids для запроса");
+    return ['Не указан'];
+  }
 
-  const curatorMap = {};
-  curators.forEach(c => {
-    curatorMap[c.id] = c.curator_name;
-  });
+  try {
+    const [curators] = await connection.execute(
+      "SELECT id, CONCAT(first_name, ' ', last_name) AS curator_name FROM users1 WHERE id IN (?)",
+      [curatorIdArray]
+    );
 
-  return curatorIdArray.map(id => curatorMap[id] || id);
+    const curatorMap = {};
+    curators.forEach(c => {
+      curatorMap[c.id.toString()] = c.curator_name;
+    });
+
+    return curatorIdArray.map(id => curatorMap[id] || 'Неизвестный куратор');
+  } catch (error) {
+    console.error("Ошибка получения имен кураторов:", error.message, { curatorIds });
+    return curatorIdArray.map(() => 'Неизвестный куратор');
+  }
 }
 
 // Тестирование подключения к базе данных и настройка
@@ -1339,11 +1356,53 @@ app.delete("/api/properties/:id", authenticate, async (req, res) => {
 
 // Получение всех объектов недвижимости (защищено)
 app.get("/api/properties", authenticate, async (req, res) => {
+  const { curator_ids } = req.query;
+
+  let curatorIdArray = null;
+  if (curator_ids) {
+    try {
+      // Handle cases where curator_ids is not a valid JSON string
+      if (typeof curator_ids !== 'string' || curator_ids.trim() === '') {
+        console.error("Ошибка: curator_ids должен быть непустой строкой JSON", { curator_ids });
+        return res.status(400).json({ error: "curator_ids должен быть корректным JSON-массивом" });
+      }
+      curatorIdArray = JSON.parse(curator_ids);
+      if (!Array.isArray(curatorIdArray)) {
+        console.error("Ошибка: curator_ids должен быть массивом", { curator_ids });
+        return res.status(400).json({ error: "curator_ids должен быть корректным JSON-массивом" });
+      }
+      // Convert to strings and validate IDs
+      curatorIdArray = curatorIdArray
+        .map(id => id.toString())
+        .filter(id => id && !isNaN(parseInt(id)));
+      if (curatorIdArray.length === 0) {
+        console.error("Ошибка: curator_ids содержит только невалидные ID", { curator_ids });
+        return res.status(400).json({ error: "curator_ids должен содержать валидные числовые ID" });
+      }
+    } catch (error) {
+      console.error("Ошибка парсинга curator_ids:", error.message, { curator_ids });
+      return res.status(400).json({ error: "curator_ids должен быть корректным JSON-массивом" });
+    }
+  }
+
   try {
     const connection = await pool.getConnection();
-    const [rows] = await connection.execute(
-      `SELECT p.* FROM properties p`
-    );
+    let query = `SELECT p.* FROM properties p`;
+    let queryParams = [];
+
+    if (req.user.role === "USER" && !curatorIdArray) {
+      // For USER role, default to filtering by their own ID if no curator_ids provided
+      query += ` WHERE JSON_CONTAINS(p.curator_ids, ?)`; // Use JSON_CONTAINS for JSON array
+      queryParams.push(JSON.stringify([req.user.id.toString()]));
+    } else if (curatorIdArray) {
+      // Filter by provided curator_ids
+      query += ` WHERE JSON_CONTAINS(p.curator_ids, ?)`; // Use JSON_CONTAINS for JSON array
+      queryParams.push(JSON.stringify(curatorIdArray));
+    }
+
+    console.log("Executing query:", query, "with params:", queryParams);
+
+    const [rows] = await connection.execute(query, queryParams);
     console.log("Объекты недвижимости получены из базы данных:", rows.length);
 
     const properties = await Promise.all(rows.map(async (row) => {
@@ -1361,7 +1420,21 @@ app.get("/api/properties", authenticate, async (req, res) => {
         }
       }
 
-      const curatorNames = await getCuratorNames(row.curator_ids, connection);
+      let curatorNames = ['Не указан'];
+      let parsedCuratorIds = [];
+      try {
+        if (row.curator_ids) {
+          parsedCuratorIds = JSON.parse(row.curator_ids);
+          if (!Array.isArray(parsedCuratorIds)) {
+            console.warn(`curator_ids не является массивом для ID: ${row.id}, данные: ${row.curator_ids}`);
+            parsedCuratorIds = [row.curator_ids.toString()];
+          }
+          curatorNames = await getCuratorNames(row.curator_ids, connection);
+        }
+      } catch (error) {
+        console.warn(`Ошибка парсинга curator_ids для ID: ${row.id}, Ошибка: ${error.message}, Данные: ${row.curator_ids}`);
+        parsedCuratorIds = [row.curator_ids ? row.curator_ids.toString() : ''];
+      }
 
       return {
         ...row,
@@ -1371,6 +1444,7 @@ app.get("/api/properties", authenticate, async (req, res) => {
         date: new Date(row.created_at).toLocaleDateString("ru-RU"),
         time: new Date(row.created_at).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" }),
         curator_name: curatorNames.join(", "),
+        curator_ids: parsedCuratorIds, // Return as array
       };
     }));
 
