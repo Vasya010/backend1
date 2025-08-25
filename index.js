@@ -998,7 +998,7 @@ app.put("/api/properties/:id", authenticate, upload.fields([
 
   try {
     const connection = await pool.getConnection();
-    const [existingProperties] = await connection.execute("SELECT photos, document, curator_ids FROM properties WHERE id = ?", [id]);
+    const [existingProperties] = await connection.execute("SELECT photos, document, curator_ids, created_at FROM properties WHERE id = ?", [id]);
     if (existingProperties.length === 0) {
       connection.release();
       console.error("Объект недвижимости не найден по ID:", id);
@@ -1044,6 +1044,16 @@ app.put("/api/properties/:id", authenticate, upload.fields([
     if (req.user.role === "REALTOR" && finalCuratorIds && finalCuratorIds !== req.user.id.toString()) {
       console.error("Ошибка: Риелтор может назначить только себя куратором", { finalCuratorIds, userId: req.user.id });
       return res.status(403).json({ error: "Риелтор может назначить только себя куратором" });
+    }
+
+    // Получение имени куратора
+    let curator_name = finalCuratorIds || 'Не указан';
+    if (finalCuratorIds) {
+      const [curator] = await connection.execute(
+        "SELECT CONCAT(first_name, ' ', last_name) AS curator_name FROM users1 WHERE id = ?",
+        [finalCuratorIds]
+      );
+      curator_name = curator.length > 0 ? curator[0].curator_name : finalCuratorIds;
     }
 
     // Обработка фотографий
@@ -1175,6 +1185,7 @@ app.put("/api/properties/:id", authenticate, upload.fields([
       document_id: 0,
       owner_name,
       curator_ids: finalCuratorIds,
+      curator_name,
       price,
       unit,
       rukprice,
@@ -1192,8 +1203,8 @@ app.put("/api/properties/:id", authenticate, upload.fields([
       etajnost,
       photos: newPhotos.map((img) => `https://s3.twcstorage.ru/${bucketName}/${img}`),
       document: newDocument ? `https://s3.twcstorage.ru/${bucketName}/${newDocument}` : null,
-      date: new Date().toLocaleDateString("ru-RU"),
-      time: new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" }),
+      date: new Date(existingProperty.created_at).toLocaleDateString("ru-RU"),
+      time: new Date(existingProperty.created_at).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" }),
     };
 
     connection.release();
