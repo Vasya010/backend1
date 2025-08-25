@@ -800,9 +800,9 @@ app.post("/api/properties", authenticate, upload.fields([
   { name: "photos", maxCount: 10 },
   { name: "document", maxCount: 1 },
 ]), async (req, res) => {
-  if (!["SUPER_ADMIN", "REALTOR"].includes(req.user.role)) {
-    console.error("Доступ запрещен: Требуется роль SUPER_ADMIN или REALTOR");
-    return res.status(403).json({ error: "Доступ запрещен: Требуется роль SUPER_ADMIN или REALTOR" });
+  if (!["SUPER_ADMIN", "USER"].includes(req.user.role)) {
+    console.error("Доступ запрещен: Требуется роль SUPER_ADMIN или USER");
+    return res.status(403).json({ error: "Доступ запрещен: Требуется роль SUPER_ADMIN или USER" });
   }
 
   const { type_id, condition, series, zhk_id, owner_name, curator_ids, price, unit, rukprice, mkv, room, owner_phone, district_id, subdistrict_id, address, notes, description, status, owner_id, etaj, etajnost } = req.body;
@@ -966,9 +966,9 @@ app.put("/api/properties/:id", authenticate, upload.fields([
   { name: "photos", maxCount: 10 },
   { name: "document", maxCount: 1 },
 ]), async (req, res) => {
-  if (!["SUPER_ADMIN", "REALTOR"].includes(req.user.role)) {
-    console.error("Доступ запрещен: Требуется роль SUPER_ADMIN или REALTOR");
-    return res.status(403).json({ error: "Доступ запрещен: Требуется роль SUPER_ADMIN или REALTOR" });
+  if (!["SUPER_ADMIN", "USER"].includes(req.user.role)) {
+    console.error("Доступ запрещен: Требуется роль SUPER_ADMIN или USER");
+    return res.status(403).json({ error: "Доступ запрещен: Требуется роль SUPER_ADMIN или USER" });
   }
 
   const { id } = req.params;
@@ -1220,9 +1220,9 @@ app.put("/api/properties/:id", authenticate, upload.fields([
 // Удаление объекта недвижимости (защищено, SUPER_ADMIN или REALTOR)
 // Удаление объекта недвижимости (защищено, SUPER_ADMIN или REALTOR)
 app.delete("/api/properties/:id", authenticate, async (req, res) => {
-  if (!["SUPER_ADMIN", "REALTOR"].includes(req.user.role)) {
-    console.error("Доступ запрещен: Требуется роль SUPER_ADMIN или REALTOR");
-    return res.status(403).json({ error: "Доступ запрещен: Требуется роль SUPER_ADMIN или REALTOR" });
+  if (!["SUPER_ADMIN", "USER"].includes(req.user.role)) {
+    console.error("Доступ запрещен: Требуется роль SUPER_ADMIN или USER");
+    return res.status(403).json({ error: "Доступ запрещен: Требуется роль SUPER_ADMIN или USER" });
   }
 
   const { id } = req.params;
@@ -1574,6 +1574,7 @@ app.delete("/api/subraions/:id", authenticate, async (req, res) => {
 });
 
 // Эндпоинт для перенаправления объектов недвижимости (защищено, только SUPER_ADMIN)
+// Эндпоинт для перенаправления объектов недвижимости (защищено, только SUPER_ADMIN)
 app.patch("/api/properties/redirect", authenticate, async (req, res) => {
   if (req.user.role !== "SUPER_ADMIN") {
     console.error("Доступ запрещен: Требуется роль SUPER_ADMIN");
@@ -1605,13 +1606,13 @@ app.patch("/api/properties/redirect", authenticate, async (req, res) => {
 
     // Проверка существования куратора
     const [curatorCheck] = await connection.execute(
-      "SELECT id FROM users1 WHERE id = ? AND role = 'REALTOR'",
+      "SELECT id FROM users1 WHERE id = ? AND role = 'USER'",
       [curator_ids]
     );
     if (curatorCheck.length === 0) {
       connection.release();
-      console.error("Куратор не найден или не является риелтором:", curator_ids);
-      return res.status(400).json({ error: "Куратор не найден или не является риелтором" });
+      console.error("Куратор не найден или не является пользователем:", curator_ids);
+      return res.status(400).json({ error: "Куратор не найден или не является пользователем" });
     }
 
     // Обновление curator_ids для всех указанных объектов
@@ -1634,7 +1635,6 @@ app.patch("/api/properties/redirect", authenticate, async (req, res) => {
     res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
   }
 });
-
 // Запуск сервера
 app.listen(port, () => {
   console.log(`Сервер запущен на порту ${port}`);
