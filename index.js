@@ -29,6 +29,12 @@ const bucketName = "a2c31109-3cf2c97b-aca1-42b0-a822-3e0ade279447";
 app.use(cors());
 app.use(express.json());
 
+// Глобальный обработчик ошибок для возврата JSON
+app.use((err, req, res, next) => {
+  console.error("Глобальная ошибка:", err.message);
+  res.status(500).json({ error: `Внутренняя ошибка сервера: ${err.message}` });
+});
+
 // Конфигурация Multer для хранения в памяти
 const storage = multer.memoryStorage();
 const upload = multer({
@@ -53,7 +59,7 @@ const dbConfig = {
   password: "Vasya11091109",
   database: "cs51703_kgadmin",
   port: 3306,
-  connectionLimit: 10, // Лимит соединений в пуле
+  connectionLimit: 10,
 };
 const pool = mysql.createPool(dbConfig);
 
@@ -68,7 +74,6 @@ const authenticate = async (req, res, next) => {
     const decoded = jwt.verify(token, jwtSecret);
     console.log("Токен успешно проверен:", decoded);
 
-    // Проверяем токен в базе данных
     const connection = await pool.getConnection();
     const [users] = await connection.execute("SELECT id, role FROM users1 WHERE id = ? AND token = ?", [decoded.id, token]);
     connection.release();
@@ -110,13 +115,11 @@ async function testDatabaseConnection() {
         ) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci
       `);
     } else {
-      // Проверяем, существует ли столбец token
       const [columns] = await connection.execute("SHOW COLUMNS FROM users1 LIKE 'token'");
       if (columns.length === 0) {
         console.log("Столбец token не существует, добавляем...");
         await connection.execute("ALTER TABLE users1 ADD token TEXT DEFAULT NULL");
       }
-      // Проверяем, есть ли уникальный индекс на email
       const [indexes] = await connection.execute("SHOW INDEX FROM users1 WHERE Column_name = 'email' AND Non_unique = 0");
       if (indexes.length === 0) {
         console.log("Уникальный индекс для email не существует, добавляем...");
@@ -163,7 +166,6 @@ async function testDatabaseConnection() {
       `);
     }
 
-    // Проверка существования админа и обновление/создание
     const adminEmail = "admin@example.com";
     const adminPassword = "admin123";
     const hashedPassword = await bcrypt.hash(adminPassword, 10);
@@ -195,7 +197,6 @@ async function testDatabaseConnection() {
     console.log(`Пароль: ${adminPassword}`);
     console.log("Роль: SUPER_ADMIN");
 
-    // Тест БД
     const [rows] = await connection.execute("SELECT 1 AS test");
     if (rows.length > 0) {
       console.log("База данных работает корректно!");
@@ -257,7 +258,6 @@ app.post("/api/admin/login", async (req, res) => {
       return res.status(401).json({ error: "Неверный пароль" });
     }
 
-    // Генерируем новый токен с длительным сроком действия
     const token = jwt.sign({ id: user.id, role: user.role }, jwtSecret, { expiresIn: "30d" });
     await connection.execute("UPDATE users1 SET token = ? WHERE id = ?", [token, user.id]);
 
@@ -347,7 +347,6 @@ app.post("/api/users", authenticate, upload.single("photo"), async (req, res) =>
   try {
     const connection = await pool.getConnection();
 
-    // Проверка уникальности email
     const [existingUser] = await connection.execute("SELECT id FROM users1 WHERE email = ?", [email]);
     if (existingUser.length > 0) {
       connection.release();
@@ -369,7 +368,6 @@ app.post("/api/users", authenticate, upload.single("photo"), async (req, res) =>
     const hashedPassword = await bcrypt.hash(password, 10);
     console.log("Хеш пароля для нового пользователя:", hashedPassword);
 
-    // Создание пользователя и генерация токена
     const [result] = await connection.execute(
       "INSERT INTO users1 (first_name, last_name, email, phone, role, password, profile_picture) VALUES (?, ?, ?, ?, ?, ?, ?)",
       [first_name, last_name, email, phone, role, hashedPassword, profile_picture]
@@ -430,7 +428,6 @@ app.put("/api/users/:id", authenticate, upload.single("photo"), async (req, res)
       return res.status(404).json({ error: "Пользователь не найден" });
     }
 
-    // Проверка уникальности email (кроме текущего пользователя)
     const [emailCheck] = await connection.execute("SELECT id FROM users1 WHERE email = ? AND id != ?", [email, id]);
     if (emailCheck.length > 0) {
       connection.release();
@@ -549,19 +546,16 @@ app.post("/api/properties", authenticate, upload.fields([
     mimetype: req.files["document"][0].mimetype,
   } : null;
 
-  // Проверка обязательных полей
   if (!type_id || !price || !rukprice || !mkv || !address || !etaj || !etajnost) {
     console.error("Ошибка: не все обязательные поля заполнены", { type_id, price, rukprice, mkv, address, etaj, etajnost });
     return res.status(400).json({ error: "Все обязательные поля (type_id, price, rukprice, mkv, address, etaj, etajnost) должны быть заполнены" });
   }
 
-  // Валидация числовых полей
   if (isNaN(parseFloat(price)) || isNaN(parseFloat(rukprice)) || isNaN(parseFloat(mkv)) || isNaN(parseInt(etaj)) || isNaN(parseInt(etajnost))) {
     console.error("Ошибка: числовые поля некорректны", { price, rukprice, mkv, etaj, etajnost });
     return res.status(400).json({ error: "Поля price, rukprice, mkv, etaj, etajnost должны быть числовыми" });
   }
 
-  // Проверка curator_ids для REALTOR
   let finalCuratorIds = curator_ids || (req.user.role === "REALTOR" ? req.user.id.toString() : null);
   if (req.user.role === "REALTOR" && curator_ids && curator_ids !== req.user.id.toString()) {
     console.error("Ошибка: риелтор может указывать только себя в качестве куратора", { curator_ids, userId: req.user.id });
@@ -569,7 +563,6 @@ app.post("/api/properties", authenticate, upload.fields([
   }
 
   try {
-    // Загрузка изображений в S3
     for (const photo of photos) {
       const uploadParams = {
         Bucket: bucketName,
@@ -581,7 +574,6 @@ app.post("/api/properties", authenticate, upload.fields([
       console.log(`Изображение загружено в S3: ${photo.filename}`);
     }
 
-    // Загрузка документа в S3, если есть
     if (document) {
       const uploadParams = {
         Bucket: bucketName,
@@ -594,8 +586,7 @@ app.post("/api/properties", authenticate, upload.fields([
     }
 
     const connection = await pool.getConnection();
-    const photosJson = JSON.stringify(photos.map(img => img.filename)); // Гарантируем валидный JSON
-    console.log("Сохраняем photos в базе:", photosJson);
+    const photosJson = JSON.stringify(photos.map(img => img.filename));
 
     const [result] = await connection.execute(
       `INSERT INTO properties (
@@ -607,7 +598,7 @@ app.post("/api/properties", authenticate, upload.fields([
         condition || null,
         series || null,
         zhk_id || null,
-        0, // document_id пока фиксировано, замените на динамическое значение, если требуется
+        0,
         owner_name || null,
         finalCuratorIds,
         price,
@@ -621,8 +612,8 @@ app.post("/api/properties", authenticate, upload.fields([
         address,
         notes || null,
         description || null,
-        null, // latitude
-        null, // longitude
+        null,
+        null,
         photosJson,
         document ? document.filename : null,
         status || null,
@@ -667,6 +658,191 @@ app.post("/api/properties", authenticate, upload.fields([
     res.json(newProperty);
   } catch (error) {
     console.error("Ошибка создания записи в properties:", error.message);
+    res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
+  }
+});
+
+// Обновление записи в properties (защищённый, SUPER_ADMIN или REALTOR)
+app.put("/api/properties/:id", authenticate, upload.fields([
+  { name: "photos", maxCount: 10 },
+  { name: "document", maxCount: 1 },
+]), async (req, res) => {
+  if (!["SUPER_ADMIN", "REALTOR"].includes(req.user.role)) {
+    console.error("Доступ запрещён: не SUPER_ADMIN или REALTOR");
+    return res.status(403).json({ error: "Доступ запрещен: требуется роль SUPER_ADMIN или REALTOR" });
+  }
+
+  const { id } = req.params;
+  const { type_id, condition, series, zhk_id, owner_name, curator_ids, price, unit, rukprice, mkv, room, phone, district_id, subdistrict_id, address, notes, description, status, owner_id, etaj, etajnost } = req.body;
+  const photos = req.files["photos"] ? req.files["photos"].map((file) => ({
+    filename: `${Date.now()}-${Math.round(Math.random() * 1e9)}${path.extname(file.originalname)}`,
+    buffer: file.buffer,
+    mimetype: file.mimetype,
+  })) : [];
+  const document = req.files["document"] ? {
+    filename: `${Date.now()}-${Math.round(Math.random() * 1e9)}${path.extname(req.files["document"][0].originalname)}`,
+    buffer: req.files["document"][0].buffer,
+    mimetype: req.files["document"][0].mimetype,
+  } : null;
+
+  if (!type_id || !price || !rukprice || !mkv || !address || !etaj || !etajnost) {
+    console.error("Ошибка: не все обязательные поля заполнены", { type_id, price, rukprice, mkv, address, etaj, etajnost });
+    return res.status(400).json({ error: "Все обязательные поля (type_id, price, rukprice, mkv, address, etaj, etajnost) должны быть заполнены" });
+  }
+
+  if (isNaN(parseFloat(price)) || isNaN(parseFloat(rukprice)) || isNaN(parseFloat(mkv)) || isNaN(parseInt(etaj)) || isNaN(parseInt(etajnost))) {
+    console.error("Ошибка: числовые поля некорректны", { price, rukprice, mkv, etaj, etajnost });
+    return res.status(400).json({ error: "Поля price, rukprice, mkv, etaj, etajnost должны быть числовыми" });
+  }
+
+  let finalCuratorIds = curator_ids || (req.user.role === "REALTOR" ? req.user.id.toString() : null);
+  if (req.user.role === "REALTOR" && curator_ids && curator_ids !== req.user.id.toString()) {
+    console.error("Ошибка: риелтор может указывать только себя в качестве куратора", { curator_ids, userId: req.user.id });
+    return res.status(403).json({ error: "Риелтор может указывать только себя в качестве куратора" });
+  }
+
+  try {
+    const connection = await pool.getConnection();
+    const [existingProperties] = await connection.execute("SELECT photos, document, curator_ids FROM properties WHERE id = ?", [id]);
+    if (existingProperties.length === 0) {
+      connection.release();
+      console.error("Запись не найдена по ID:", id);
+      return res.status(404).json({ error: "Запись не найдена" });
+    }
+
+    const existingProperty = existingProperties[0];
+    if (req.user.role === "REALTOR" && existingProperty.curator_ids !== req.user.id.toString()) {
+      connection.release();
+      console.error("Ошибка: риелтор не является куратором этой записи", { id, curator_ids: existingProperty.curator_ids, userId: req.user.id });
+      return res.status(403).json({ error: "У вас нет прав на редактирование этой записи" });
+    }
+
+    let photoFiles = [];
+    if (existingProperty.photos) {
+      try {
+        photoFiles = JSON.parse(existingProperty.photos);
+        if (!Array.isArray(photoFiles)) {
+          console.warn("Поле photos не является массивом:", existingProperty.photos);
+          photoFiles = [];
+        }
+      } catch (error) {
+        console.error("Ошибка парсинга photos:", error.message);
+        photoFiles = [];
+      }
+    }
+
+    if (photos.length > 0) {
+      for (const photo of photos) {
+        const uploadParams = {
+          Bucket: bucketName,
+          Key: photo.filename,
+          Body: photo.buffer,
+          ContentType: photo.mimetype,
+        };
+        await s3Client.send(new PutObjectCommand(uploadParams));
+        console.log(`Новое изображение загружено в S3: ${photo.filename}`);
+      }
+
+      for (const oldPhoto of photoFiles) {
+        await s3Client.send(new DeleteObjectCommand({ Bucket: bucketName, Key: oldPhoto }));
+        console.log(`Старое изображение удалено из S3: ${oldPhoto}`);
+      }
+    }
+
+    let newDocument = existingProperty.document;
+    if (document) {
+      const uploadParams = {
+        Bucket: bucketName,
+        Key: document.filename,
+        Body: document.buffer,
+        ContentType: document.mimetype,
+      };
+      await s3Client.send(new PutObjectCommand(uploadParams));
+      console.log(`Новый документ загружен в S3: ${document.filename}`);
+
+      if (existingProperty.document) {
+        await s3Client.send(new DeleteObjectCommand({ Bucket: bucketName, Key: existingProperty.document }));
+        console.log(`Старый документ удалён из S3: ${existingProperty.document}`);
+      }
+      newDocument = document.filename;
+    }
+
+    const photosJson = JSON.stringify(photos.length > 0 ? photos.map(img => img.filename) : photoFiles);
+
+    const [result] = await connection.execute(
+      `UPDATE properties SET
+        type_id = ?, \`condition\` = ?, series = ?, zhk_id = ?, document_id = ?, owner_name = ?, curator_ids = ?, price = ?, unit = ?, rukprice = ?, mkv = ?, room = ?, phone = ?,
+        district_id = ?, subdistrict_id = ?, address = ?, notes = ?, description = ?, photos = ?, document = ?, status = ?, owner_id = ?, etaj = ?, etajnost = ?
+        WHERE id = ?`,
+      [
+        type_id || null,
+        condition || null,
+        series || null,
+        zhk_id || null,
+        0,
+        owner_name || null,
+        finalCuratorIds,
+        price,
+        unit || null,
+        rukprice,
+        mkv,
+        room || null,
+        phone || null,
+        district_id || null,
+        subdistrict_id || null,
+        address,
+        notes || null,
+        description || null,
+        photosJson,
+        newDocument,
+        status || null,
+        owner_id || null,
+        etaj,
+        etajnost,
+        id
+      ]
+    );
+
+    if (result.affectedRows === 0) {
+      connection.release();
+      return res.status(404).json({ error: "Запись не найдена" });
+    }
+    console.log("Запись обновлена, ID:", id);
+
+    const updatedProperty = {
+      id: parseInt(id),
+      type_id,
+      condition,
+      series,
+      zhk_id,
+      document_id: 0,
+      owner_name,
+      curator_ids: finalCuratorIds,
+      price,
+      unit,
+      rukprice,
+      mkv,
+      room,
+      phone,
+      district_id,
+      subdistrict_id,
+      address,
+      notes,
+      description,
+      status,
+      owner_id,
+      etaj,
+      etajnost,
+      photos: photos.length > 0 ? photos.map((img) => `https://s3.twcstorage.ru/${bucketName}/${img.filename}`) : photoFiles.map((img) => `https://s3.twcstorage.ru/${bucketName}/${img}`),
+      document: newDocument ? `https://s3.twcstorage.ru/${bucketName}/${newDocument}` : null,
+      date: new Date().toLocaleDateString('ru-RU'),
+      time: new Date().toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }),
+    };
+
+    connection.release();
+    res.json(updatedProperty);
+  } catch (error) {
+    console.error("Ошибка обновления записи:", error.message);
     res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
   }
 });
