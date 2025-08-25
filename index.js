@@ -124,7 +124,7 @@ async function testDatabaseConnection() {
         CREATE TABLE properties (
           id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
           type_id VARCHAR(255) DEFAULT NULL,
-          condition VARCHAR(255) DEFAULT NULL,
+          \`condition\` VARCHAR(255) DEFAULT NULL,
           series VARCHAR(255) DEFAULT NULL,
           zhk_id VARCHAR(255) DEFAULT NULL,
           document_id INT NOT NULL,
@@ -213,7 +213,7 @@ app.get("/api/message", (req, res) => {
 // Эндпоинт для логина админа
 app.post("/api/admin/login", async (req, res) => {
   const { email, password } = req.body;
-  console.log("Попытка логина:", { email, password });
+  console.log("Попытка логина:", { email });
 
   if (!email || !password) {
     console.error("Ошибка: email или пароль отсутствуют");
@@ -262,7 +262,7 @@ app.post("/api/admin/login", async (req, res) => {
       role: user.role,
       photoUrl: user.photoUrl ? `https://s3.twcstorage.ru/${bucketName}/${user.photoUrl}` : null,
       name: `${user.first_name} ${user.last_name}`.trim(),
-      token, // Возвращаем токен в ответе
+      token,
     };
 
     console.log("Логин успешен, токен сгенерирован и сохранён");
@@ -306,7 +306,7 @@ app.post("/api/users", authenticate, upload.single("photo"), async (req, res) =>
   const { email, name, phone, role, password } = req.body;
   const photo = req.file;
 
-  console.log("Входные данные для создания пользователя:", { email, name, phone, role, password, hasPhoto: !!photo });
+  console.log("Входные данные для создания пользователя:", { email, name, phone, role, hasPhoto: !!photo });
 
   if (!email || !name || !phone || !role || !password) {
     console.error("Ошибка: не все поля заполнены", { email, name, phone, role, password });
@@ -510,9 +510,16 @@ app.post("/api/properties", authenticate, upload.fields([
     mimetype: req.files["document"][0].mimetype,
   } : null;
 
+  // Проверка обязательных полей
   if (!type_id || !price || !rukprice || !mkv || !address || !etaj || !etajnost) {
-    console.error("Ошибка: не все обязательные поля заполнены");
+    console.error("Ошибка: не все обязательные поля заполнены", { type_id, price, rukprice, mkv, address, etaj, etajnost });
     return res.status(400).json({ error: "Все обязательные поля (type_id, price, rukprice, mkv, address, etaj, etajnost) должны быть заполнены" });
+  }
+
+  // Проверка curator_ids для REALTOR
+  if (req.user.role === "REALTOR" && curator_ids && curator_ids !== req.user.id.toString()) {
+    console.error("Ошибка: риелтор может указывать только себя в качестве куратора", { curator_ids, userId: req.user.id });
+    return res.status(403).json({ error: "Риелтор может указывать только себя в качестве куратора" });
   }
 
   try {
@@ -543,13 +550,36 @@ app.post("/api/properties", authenticate, upload.fields([
     const connection = await mysql.createConnection(dbConfig);
     const [result] = await connection.execute(
       `INSERT INTO properties (
-        type_id, condition, series, zhk_id, document_id, owner_name, curator_ids, price, unit, rukprice, mkv, room, phone, 
+        type_id, \`condition\`, series, zhk_id, document_id, owner_name, curator_ids, price, unit, rukprice, mkv, room, phone, 
         district_id, subdistrict_id, address, notes, description, latitude, longitude, photos, document, status, owner_id, etaj, etajnost
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        type_id, condition || null, series || null, zhk_id || null, 0, owner_name || null, curator_ids || null, price, unit || null, rukprice, mkv,
-        room || null, phone || null, district_id || null, subdistrict_id || null, address, notes || null, description || null, null, null,
-        JSON.stringify(photos.map(img => img.filename)), document ? document.filename : null, status || null, owner_id || null, etaj, etajnost
+        type_id || null,
+        condition || null,
+        series || null,
+        zhk_id || null,
+        0, // document_id пока фиксировано, замените на динамическое значение, если требуется
+        owner_name || null,
+        curator_ids || (req.user.role === "REALTOR" ? req.user.id : null),
+        price,
+        unit || null,
+        rukprice,
+        mkv,
+        room || null,
+        phone || null,
+        district_id || null,
+        subdistrict_id || null,
+        address,
+        notes || null,
+        description || null,
+        null, // latitude
+        null, // longitude
+        JSON.stringify(photos.map(img => img.filename)),
+        document ? document.filename : null,
+        status || null,
+        owner_id || null,
+        etaj,
+        etajnost
       ]
     );
     console.log("Новая запись создана в properties, ID:", result.insertId);
@@ -562,7 +592,7 @@ app.post("/api/properties", authenticate, upload.fields([
       zhk_id,
       document_id: 0,
       owner_name,
-      curator_ids,
+      curator_ids: curator_ids || (req.user.role === "REALTOR" ? req.user.id : null),
       price,
       unit,
       rukprice,
@@ -643,7 +673,7 @@ app.get("/api/properties", authenticate, async (req, res) => {
   try {
     const connection = await mysql.createConnection(dbConfig);
     const [rows] = await connection.execute(
-      `SELECT id, type_id, condition, series, zhk_id, document_id, owner_name, curator_ids, price, unit, rukprice, mkv, room, phone, 
+      `SELECT id, type_id, \`condition\`, series, zhk_id, document_id, owner_name, curator_ids, price, unit, rukprice, mkv, room, phone, 
        district_id, subdistrict_id, address, notes, description, latitude, longitude, created_at, photos, document, status, owner_id, etaj, etajnost 
        FROM properties`
     );
