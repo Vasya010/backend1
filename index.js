@@ -13,9 +13,6 @@ const port = process.env.PORT || 5000;
 const publicDomain = process.env.PUBLIC_DOMAIN || "https://vasya010-backend1-10db.twc1.net";
 const jwtSecret = process.env.JWT_SECRET || "your_jwt_secret_123";
 
-// Valid roles for validation
-const VALID_ROLES = ['USER', 'ADMIN', 'SUPER_ADMIN', 'REALTOR'];
-
 // S3 Configuration
 const s3Client = new S3Client({
   region: process.env.S3_REGION || "ru-1",
@@ -345,11 +342,6 @@ app.post("/api/users", authenticate, upload.single("photo"), async (req, res) =>
     return res.status(400).json({ error: "All fields (email, name, phone, role, password) are required" });
   }
 
-  // Validate role
-  if (!VALID_ROLES.includes(role)) {
-    return res.status(400).json({ error: `Invalid role. Must be one of: ${VALID_ROLES.join(', ')}` });
-  }
-
   const [first_name, last_name = ""] = name.split(" ");
   const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
   const profile_picture = photo ? `${uniqueSuffix}${path.extname(photo.originalname)}` : null;
@@ -413,11 +405,6 @@ app.put("/api/users/:id", authenticate, upload.single("photo"), async (req, res)
 
   if (!email || !name || !phone || !role) {
     return res.status(400).json({ error: "All fields (email, name, phone, role) are required" });
-  }
-
-  // Validate role
-  if (!VALID_ROLES.includes(role)) {
-    return res.status(400).json({ error: `Invalid role. Must be one of: ${VALID_ROLES.join(', ')}` });
   }
 
   const [first_name, last_name = ""] = name.split(" ");
