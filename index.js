@@ -967,8 +967,8 @@ app.put("/api/properties/:id", authenticate, upload.fields([
   { name: "document", maxCount: 1 },
 ]), async (req, res) => {
   if (!["SUPER_ADMIN", "REALTOR"].includes(req.user.role)) {
-    console.error("Доступ запрещен: Требуется роль SUPER_ADMIN или REALTOR");
-    return res.status(403).json({ error: "Доступ запрещен: Требуется роль SUPER_ADMIN или REALTOR" });
+    console.error("Доступ запрещен: Требуется роль SUPER_ADMIN или Риелтор");
+    return res.status(403).json({ error: "Доступ запрещен: Требуется роль SUPER_ADMIN или Риелтор" });
   }
 
   const { id } = req.params;
@@ -1221,8 +1221,8 @@ app.put("/api/properties/:id", authenticate, upload.fields([
 // Удаление объекта недвижимости (защищено, SUPER_ADMIN или REALTOR)
 app.delete("/api/properties/:id", authenticate, async (req, res) => {
   if (!["SUPER_ADMIN", "REALTOR"].includes(req.user.role)) {
-    console.error("Доступ запрещен: Требуется роль SUPER_ADMIN или REALTOR");
-    return res.status(403).json({ error: "Доступ запрещен: Требуется роль SUPER_ADMIN или REALTOR" });
+    console.error("Доступ запрещен: Требуется роль SUPER_ADMIN или Риелтор");
+    return res.status(403).json({ error: "Доступ запрещен: Требуется роль SUPER_ADMIN или Риелтор" });
   }
 
   const { id } = req.params;
