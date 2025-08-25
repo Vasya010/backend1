@@ -722,12 +722,12 @@ app.put("/api/properties/:id", authenticate, upload.fields([
       try {
         photoFiles = JSON.parse(existingProperty.photos);
         if (!Array.isArray(photoFiles)) {
-          console.warn("Поле photos не является массивом:", existingProperty.photos);
-          photoFiles = [];
+          console.warn(`Поле photos не является массивом для ID: ${id}, данные: ${existingProperty.photos}`);
+          photoFiles = existingProperty.photos.split(',').filter(p => p.trim());
         }
       } catch (error) {
-        console.error("Ошибка парсинга photos:", error.message);
-        photoFiles = [];
+        console.error(`Ошибка парсинга photos для ID: ${id}, Ошибка: ${error.message}, Данные: ${existingProperty.photos}`);
+        photoFiles = existingProperty.photos.split(',').filter(p => p.trim());
       }
     }
 
@@ -744,8 +744,12 @@ app.put("/api/properties/:id", authenticate, upload.fields([
       }
 
       for (const oldPhoto of photoFiles) {
-        await s3Client.send(new DeleteObjectCommand({ Bucket: bucketName, Key: oldPhoto }));
-        console.log(`Старое изображение удалено из S3: ${oldPhoto}`);
+        try {
+          await s3Client.send(new DeleteObjectCommand({ Bucket: bucketName, Key: oldPhoto }));
+          console.log(`Старое изображение удалено из S3: ${oldPhoto}`);
+        } catch (error) {
+          console.warn(`Не удалось удалить старое изображение из S3: ${oldPhoto}, Ошибка: ${error.message}`);
+        }
       }
     }
 
@@ -761,8 +765,12 @@ app.put("/api/properties/:id", authenticate, upload.fields([
       console.log(`Новый документ загружен в S3: ${document.filename}`);
 
       if (existingProperty.document) {
-        await s3Client.send(new DeleteObjectCommand({ Bucket: bucketName, Key: existingProperty.document }));
-        console.log(`Старый документ удалён из S3: ${existingProperty.document}`);
+        try {
+          await s3Client.send(new DeleteObjectCommand({ Bucket: bucketName, Key: existingProperty.document }));
+          console.log(`Старый документ удалён из S3: ${existingProperty.document}`);
+        } catch (error) {
+          console.warn(`Не удалось удалить старый документ из S3: ${existingProperty.document}, Ошибка: ${error.message}`);
+        }
       }
       newDocument = document.filename;
     }
@@ -847,45 +855,59 @@ app.put("/api/properties/:id", authenticate, upload.fields([
   }
 });
 
-// Удаление записи из properties (защищённый, только SUPER_ADMIN)
+// Удаление записи из properties (защищённый, SUPER_ADMIN или REALTOR)
 app.delete("/api/properties/:id", authenticate, async (req, res) => {
-  if (req.user.role !== "SUPER_ADMIN") {
-    console.error("Доступ запрещён: не SUPER_ADMIN");
-    return res.status(403).json({ error: "Доступ запрещен: требуется роль SUPER_ADMIN" });
+  if (!["SUPER_ADMIN", "REALTOR"].includes(req.user.role)) {
+    console.error("Доступ запрещён: не SUPER_ADMIN или REALTOR");
+    return res.status(403).json({ error: "Доступ запрещен: требуется роль SUPER_ADMIN или REALTOR" });
   }
 
   const { id } = req.params;
 
   try {
     const connection = await pool.getConnection();
-    const [properties] = await connection.execute("SELECT photos, document FROM properties WHERE id = ?", [id]);
+    const [properties] = await connection.execute("SELECT photos, document, curator_ids FROM properties WHERE id = ?", [id]);
     if (properties.length === 0) {
       connection.release();
       console.error("Запись не найдена по ID:", id);
       return res.status(404).json({ error: "Запись не найдена" });
     }
 
-    const { photos, document } = properties[0];
-    if (photos) {
-      let photoFiles = [];
+    const existingProperty = properties[0];
+    if (req.user.role === "REALTOR" && existingProperty.curator_ids !== req.user.id.toString()) {
+      connection.release();
+      console.error("Ошибка: риелтор не является куратором этой записи", { id, curator_ids: existingProperty.curator_ids, userId: req.user.id });
+      return res.status(403).json({ error: "У вас нет прав на удаление этой записи" });
+    }
+
+    let photoFiles = [];
+    if (existingProperty.photos) {
       try {
-        photoFiles = JSON.parse(photos);
+        photoFiles = JSON.parse(existingProperty.photos);
         if (!Array.isArray(photoFiles)) {
-          console.warn("Поле photos не является массивом:", photos);
-          photoFiles = [];
+          console.warn(`Поле photos не является массивом для ID: ${id}, данные: ${existingProperty.photos}`);
+          photoFiles = existingProperty.photos.split(',').filter(p => p.trim());
         }
       } catch (error) {
-        console.error("Ошибка парсинга photos:", error.message, "Данные:", photos);
-        photoFiles = [];
+        console.error(`Ошибка парсинга photos для ID: ${id}, Ошибка: ${error.message}, Данные: ${existingProperty.photos}`);
+        photoFiles = existingProperty.photos.split(',').filter(p => p.trim());
       }
       for (const img of photoFiles) {
-        await s3Client.send(new DeleteObjectCommand({ Bucket: bucketName, Key: img }));
-        console.log(`Изображение удалено из S3: ${img}`);
+        try {
+          await s3Client.send(new DeleteObjectCommand({ Bucket: bucketName, Key: img }));
+          console.log(`Изображение удалено из S3: ${img}`);
+        } catch (error) {
+          console.warn(`Не удалось удалить изображение из S3: ${img}, Ошибка: ${error.message}`);
+        }
       }
     }
-    if (document) {
-      await s3Client.send(new DeleteObjectCommand({ Bucket: bucketName, Key: document }));
-      console.log(`Документ удалён из S3: ${document}`);
+    if (existingProperty.document) {
+      try {
+        await s3Client.send(new DeleteObjectCommand({ Bucket: bucketName, Key: existingProperty.document }));
+        console.log(`Документ удалён из S3: ${existingProperty.document}`);
+      } catch (error) {
+        console.warn(`Не удалось удалить документ из S3: ${existingProperty.document}, Ошибка: ${error.message}`);
+      }
     }
 
     const [result] = await connection.execute("DELETE FROM properties WHERE id = ?", [id]);
@@ -916,15 +938,17 @@ app.get("/api/properties", authenticate, async (req, res) => {
 
     const properties = rows.map((row) => {
       let parsedPhotos = [];
-      try {
-        parsedPhotos = row.photos ? JSON.parse(row.photos) : [];
-        if (!Array.isArray(parsedPhotos)) {
-          console.warn("Поле photos не является массивом для ID:", row.id, "Данные:", row.photos);
-          parsedPhotos = [];
+      if (row.photos) {
+        try {
+          parsedPhotos = JSON.parse(row.photos);
+          if (!Array.isArray(parsedPhotos)) {
+            console.warn(`Поле photos не является массивом для ID: ${row.id}, данные: ${row.photos}`);
+            parsedPhotos = row.photos.split(',').filter(p => p.trim());
+          }
+        } catch (error) {
+          console.error(`Ошибка парсинга photos для ID: ${row.id}, Ошибка: ${error.message}, Данные: ${row.photos}`);
+          parsedPhotos = row.photos.split(',').filter(p => p.trim());
         }
-      } catch (error) {
-        console.error("Ошибка парсинга photos для ID:", row.id, "Ошибка:", error.message, "Данные:", row.photos);
-        parsedPhotos = [];
       }
 
       return {
