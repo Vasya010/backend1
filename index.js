@@ -45,11 +45,11 @@ const bucketName = process.env.S3_BUCKET || "a2c31109-3cf2c97b-aca1-42b0-a822-3e
 // Middleware
 const corsOptions = {
   origin: [
-    publicDomain, // https://vasya010-backend1-10db.twc1.net
+    publicDomain,
     "http://localhost:3000",
-    "https://alatooned.ru" // Добавьте ваш фронтенд-домен
+    "https://alatooned.ru"
   ],
-  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"], // Добавьте OPTIONS для preflight-запросов
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
   allowedHeaders: ["Content-Type", "Authorization"],
   credentials: true,
 };
@@ -833,39 +833,44 @@ app.post("/api/properties", authenticate, upload.fields([
     }
 
     const photosJson = JSON.stringify(photos.map(img => img.filename));
+    // Преобразование числовых значений в строки для соответствия типам столбцов
+    const queryParams = [
+      type_id || null,
+      condition || null,
+      series || null,
+      zhk_id || null,
+      null,
+      owner_name || null,
+      finalCuratorIds,
+      String(price), // Преобразование в строку
+      unit || null,
+      String(rukprice), // Преобразование в строку
+      String(mkv), // Преобразование в строку
+      room || null,
+      phone || null,
+      district_id || null,
+      subdistrict_id || null,
+      address,
+      notes || null,
+      description || null,
+      null,
+      null,
+      photosJson,
+      document ? document.filename : null,
+      status || null,
+      owner_id || null,
+      String(etaj), // Преобразование в строку
+      String(etajnost), // Преобразование в строку
+    ];
+
+    logger.info("Параметры запроса для INSERT INTO properties:", queryParams);
+
     const [result] = await connection.execute(
       `INSERT INTO properties (
         type_id, \`condition\`, series, zhk_id, document_id, owner_name, curator_ids, price, unit, rukprice, mkv, room, phone, 
         district_id, subdistrict_id, address, notes, description, latitude, longitude, photos, document, status, owner_id, etaj, etajnost
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        type_id || null,
-        condition || null,
-        series || null,
-        zhk_id || null,
-        null,
-        owner_name || null,
-        finalCuratorIds,
-        price,
-        unit || null,
-        rukprice,
-        mkv,
-        room || null,
-        phone || null,
-        district_id || null,
-        subdistrict_id || null,
-        address,
-        notes || null,
-        description || null,
-        null,
-        null,
-        photosJson,
-        document ? document.filename : null,
-        status || null,
-        owner_id || null,
-        etaj,
-        etajnost,
-      ]
+      queryParams
     );
 
     await connection.commit();
@@ -1078,38 +1083,43 @@ app.put("/api/properties/:id", authenticate, upload.fields([
       newDocument = document.filename;
     }
 
+    // Преобразование числовых значений в строки для соответствия типам столбцов
+    const queryParams = [
+      type_id || null,
+      condition || null,
+      series || null,
+      zhk_id || null,
+      null,
+      owner_name || null,
+      finalCuratorIds,
+      String(price), // Преобразование в строку
+      unit || null,
+      String(rukprice), // Преобразование в строку
+      String(mkv), // Преобразование в строку
+      room || null,
+      phone || null,
+      district_id || null,
+      subdistrict_id || null,
+      address,
+      notes || null,
+      description || null,
+      photosJson,
+      newDocument,
+      status || null,
+      owner_id || null,
+      String(etaj), // Преобразование в строку
+      String(etajnost), // Преобразование в строку
+      id,
+    ];
+
+    logger.info("Параметры запроса для UPDATE properties:", queryParams);
+
     const [result] = await connection.execute(
       `UPDATE properties SET
         type_id = ?, \`condition\` = ?, series = ?, zhk_id = ?, document_id = ?, owner_name = ?, curator_ids = ?, price = ?, unit = ?, rukprice = ?, mkv = ?, room = ?, phone = ?,
         district_id = ?, subdistrict_id = ?, address = ?, notes = ?, description = ?, photos = ?, document = ?, status = ?, owner_id = ?, etaj = ?, etajnost = ?
         WHERE id = ?`,
-      [
-        type_id || null,
-        condition || null,
-        series || null,
-        zhk_id || null,
-        null,
-        owner_name || null,
-        finalCuratorIds,
-        price,
-        unit || null,
-        rukprice,
-        mkv,
-        room || null,
-        phone || null,
-        district_id || null,
-        subdistrict_id || null,
-        address,
-        notes || null,
-        description || null,
-        photosJson,
-        newDocument,
-        status || null,
-        owner_id || null,
-        etaj,
-        etajnost,
-        id,
-      ]
+      queryParams
     );
 
     if (result.affectedRows === 0) {
