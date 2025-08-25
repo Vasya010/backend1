@@ -572,7 +572,6 @@ app.delete("/api/users/:id", authenticate, async (req, res) => {
 });
 
 // Получение всех ЖК (защищено)
-// Получение всех ЖК (защищено)
 app.get("/api/jk", authenticate, async (req, res) => {
   try {
     const connection = await pool.getConnection();
@@ -585,8 +584,6 @@ app.get("/api/jk", authenticate, async (req, res) => {
     res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
   }
 });
-
-
 
 // Создание нового ЖК (защищено, только SUPER_ADMIN)
 app.post("/api/jk", authenticate, upload.single("photo"), async (req, res) => {
@@ -985,6 +982,10 @@ app.put("/api/properties/:id", authenticate, upload.fields([
     mimetype: req.files["document"][0].mimetype,
   } : null;
 
+  console.log("Входные данные для обновления объекта недвижимости:", {
+    id, type_id, condition, series, zhk_id, owner_name, curator_ids, price, unit, rukprice, mkv, room, phone, district_id, subdistrict_id, address, notes, description, status, owner_id, etaj, etajnost, existingPhotos, hasNewPhotos: photos.length > 0, hasDocument: !!document
+  });
+
   if (!type_id || !price || !rukprice || !mkv || !address || !etaj || !etajnost) {
     console.error("Ошибка: Не все обязательные поля предоставлены", { type_id, price, rukprice, mkv, address, etaj, etajnost });
     return res.status(400).json({ error: "Все обязательные поля (type_id, price, rukprice, mkv, address, etaj, etajnost) должны быть предоставлены" });
@@ -993,12 +994,6 @@ app.put("/api/properties/:id", authenticate, upload.fields([
   if (isNaN(parseFloat(price)) || isNaN(parseFloat(rukprice)) || isNaN(parseFloat(mkv)) || isNaN(parseInt(etaj)) || isNaN(parseInt(etajnost))) {
     console.error("Ошибка: Числовые поля некорректны", { price, rukprice, mkv, etaj, etajnost });
     return res.status(400).json({ error: "Поля price, rukprice, mkv, etaj, etajnost должны быть числовыми" });
-  }
-
-  let finalCuratorIds = curator_ids || (req.user.role === "REALTOR" ? req.user.id.toString() : null);
-  if (req.user.role === "REALTOR" && curator_ids && curator_ids !== req.user.id.toString()) {
-    console.error("Ошибка: Риелтор может назначить только себя куратором", { curator_ids, userId: req.user.id });
-    return res.status(403).json({ error: "Риелтор может назначить только себя куратором" });
   }
 
   try {
@@ -1044,6 +1039,14 @@ app.put("/api/properties/:id", authenticate, upload.fields([
       }
     }
 
+    // Сохранение текущего curator_ids, если новое значение не предоставлено
+    let finalCuratorIds = curator_ids !== undefined ? curator_ids : existingProperty.curator_ids;
+    if (req.user.role === "REALTOR" && finalCuratorIds && finalCuratorIds !== req.user.id.toString()) {
+      console.error("Ошибка: Риелтор может назначить только себя куратором", { finalCuratorIds, userId: req.user.id });
+      return res.status(403).json({ error: "Риелтор может назначить только себя куратором" });
+    }
+
+    // Обработка фотографий
     let photoFiles = [];
     if (existingProperty.photos) {
       try {
@@ -1161,7 +1164,7 @@ app.put("/api/properties/:id", authenticate, upload.fields([
       connection.release();
       return res.status(404).json({ error: "Объект недвижимости не найден" });
     }
-    console.log("Объект недвижимости обновлен, ID:", id);
+    console.log("Объект недвижимости обновлен, ID:", id, "Куратор:", finalCuratorIds);
 
     const updatedProperty = {
       id: parseInt(id),
@@ -1342,8 +1345,6 @@ app.get("/api/listings", authenticate, async (req, res) => {
   }
 });
 
-
-
 // Получение всех районов и микрорайонов
 app.get("/api/raions", authenticate, async (req, res) => {
   try {
@@ -1369,7 +1370,6 @@ app.get("/api/raions", authenticate, async (req, res) => {
     res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
   }
 });
-
 
 // Создание нового района
 app.post("/api/raions", authenticate, async (req, res) => {
@@ -1398,7 +1398,6 @@ app.post("/api/raions", authenticate, async (req, res) => {
     res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
   }
 });
-
 
 // Создание нового микрорайона
 app.post("/api/subraions", authenticate, async (req, res) => {
@@ -1435,7 +1434,6 @@ app.post("/api/subraions", authenticate, async (req, res) => {
   }
 });
 
-
 // Обновление района
 app.put("/api/raions/:id", authenticate, async (req, res) => {
   if (req.user.role !== "SUPER_ADMIN") {
@@ -1468,7 +1466,6 @@ app.put("/api/raions/:id", authenticate, async (req, res) => {
     res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
   }
 });
-
 
 // Обновление микрорайона
 app.put("/api/subraions/:id", authenticate, async (req, res) => {
@@ -1509,8 +1506,6 @@ app.put("/api/subraions/:id", authenticate, async (req, res) => {
     res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
   }
 });
-
-
 
 // Удаление района
 app.delete("/api/raions/:id", authenticate, async (req, res) => {
@@ -1566,7 +1561,7 @@ app.delete("/api/subraions/:id", authenticate, async (req, res) => {
 app.patch("/api/properties/redirect", authenticate, async (req, res) => {
   if (req.user.role !== "SUPER_ADMIN") {
     console.error("Доступ запрещен: Требуется роль SUPER_ADMIN");
-    return res.status(403).json({ error: "Доступ запрещен: Требуется роль SUPER_ADMIN" });
+    return res.status(403).json({ error: "Доступ mammals запрещен: Требуется роль SUPER_ADMIN" });
   }
 
   const { propertyIds, curator_ids } = req.body;
