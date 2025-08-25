@@ -78,12 +78,13 @@ const authenticate = async (req, res, next) => {
     const decoded = jwt.verify(token, jwtSecret);
     console.log("Токен проверен:", decoded);
 
+    // Опциональная проверка токена в базе данных
     const connection = await pool.getConnection();
-    const [users] = await connection.execute("SELECT id, role FROM users1 WHERE id = ? AND token = ?", [decoded.id, token]);
+    const [users] = await connection.execute("SELECT id, role FROM users1 WHERE id = ?", [decoded.id]);
     connection.release();
 
     if (users.length === 0) {
-      console.error("Ошибка аутентификации: Токен не найден в базе данных");
+      console.error("Ошибка аутентификации: Пользователь не найден");
       return res.status(401).json({ error: "Недействительный токен" });
     }
 
@@ -223,14 +224,14 @@ async function testDatabaseConnection() {
 
     if (existingAdmin.length === 0) {
       console.log("Администратор не существует, создается...");
-      const token = jwt.sign({ id: 1, role: "SUPER_ADMIN" }, jwtSecret, { expiresIn: "30d" });
+      const token = jwt.sign({ id: 1, role: "SUPER_ADMIN" }, jwtSecret, { expiresIn: "1y" });
       await connection.execute(
         "INSERT INTO users1 (first_name, last_name, email, phone, role, password, token) VALUES (?, ?, ?, ?, ?, ?, ?)",
         ["Админ", "Пользователь", adminEmail, "123456789", "SUPER_ADMIN", hashedPassword, token]
       );
     } else {
       console.log("Администратор существует, обновление пароля и токена...");
-      const token = jwt.sign({ id: existingAdmin[0].id, role: "SUPER_ADMIN" }, jwtSecret, { expiresIn: "30d" });
+      const token = jwt.sign({ id: existingAdmin[0].id, role: "SUPER_ADMIN" }, jwtSecret, { expiresIn: "1y" });
       await connection.execute("UPDATE users1 SET password = ?, token = ? WHERE email = ?", [hashedPassword, token, adminEmail]);
     }
 
@@ -300,7 +301,7 @@ app.post("/api/admin/login", async (req, res) => {
       return res.status(401).json({ error: "Неверный пароль" });
     }
 
-    const token = jwt.sign({ id: user.id, role: user.role }, jwtSecret, { expiresIn: "30d" });
+    const token = jwt.sign({ id: user.id, role: user.role }, jwtSecret, { expiresIn: "1y" });
     await connection.execute("UPDATE users1 SET token = ? WHERE id = ?", [token, user.id]);
 
     const userResponse = {
@@ -420,7 +421,7 @@ app.post("/api/users", authenticate, upload.single("photo"), async (req, res) =>
       [first_name, last_name, email, phone, role, hashedPassword, profile_picture]
     );
     const userId = result.insertId;
-    const token = jwt.sign({ id: userId, role }, jwtSecret, { expiresIn: "30d" });
+    const token = jwt.sign({ id: userId, role }, jwtSecret, { expiresIn: "1y" });
     await connection.execute("UPDATE users1 SET token = ? WHERE id = ?", [token, userId]);
     console.log("Создан новый пользователь, ID:", userId, "Токен сохранен:", token);
 
@@ -1572,7 +1573,7 @@ app.delete("/api/subraions/:id", authenticate, async (req, res) => {
 app.patch("/api/properties/redirect", authenticate, async (req, res) => {
   if (req.user.role !== "SUPER_ADMIN") {
     console.error("Доступ запрещен: Требуется роль SUPER_ADMIN");
-    return res.status(403).json({ error: "Доступ mammals запрещен: Требуется роль SUPER_ADMIN" });
+    return res.status(403).json({ error: "Доступ запрещен: Требуется роль SUPER_ADMIN" });
   }
 
   const { propertyIds, curator_ids } = req.body;
@@ -1598,6 +1599,17 @@ app.patch("/api/properties/redirect", authenticate, async (req, res) => {
       return res.status(404).json({ error: "Некоторые объекты недвижимости не найдены" });
     }
 
+    // Проверка существования куратора
+    const [curatorCheck] = await connection.execute(
+      "SELECT id FROM users1 WHERE id = ? AND role = 'REALTOR'",
+      [curator_ids]
+    );
+    if (curatorCheck.length === 0) {
+      connection.release();
+      console.error("Куратор не найден или не является риелтором:", curator_ids);
+      return res.status(400).json({ error: "Куратор не найден или не является риелтором" });
+    }
+
     // Обновление curator_ids для всех указанных объектов
     const [result] = await connection.execute(
       "UPDATE properties SET curator_ids = ? WHERE id IN (?)",
@@ -1606,12 +1618,13 @@ app.patch("/api/properties/redirect", authenticate, async (req, res) => {
 
     if (result.affectedRows === 0) {
       connection.release();
-      return res.status(404).json({ error: "Ни один объект не был обновлен" });
+      console.error("Не удалось обновить объекты недвижимости");
+      return res.status(500).json({ error: "Не удалось обновить объекты недвижимости" });
     }
 
-    console.log(`Перенаправлено ${result.affectedRows} объектов недвижимости, новые curator_ids: ${curator_ids}`);
+    console.log(`Объекты недвижимости перенаправлены куратору ID ${curator_ids}:`, propertyIds);
     connection.release();
-    res.json({ message: "Объекты недвижимости успешно перенаправлены", affectedRows: result.affectedRows });
+    res.json({ message: "Объекты недвижимости успешно перенаправлены" });
   } catch (error) {
     console.error("Ошибка перенаправления объектов недвижимости:", error.message);
     res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
@@ -1620,6 +1633,6 @@ app.patch("/api/properties/redirect", authenticate, async (req, res) => {
 
 // Запуск сервера
 app.listen(port, () => {
-  console.log(`Сервер запущен на http://localhost:${port}`);
-  console.log(`Публичный доступ: ${publicDomain}:${port}`);
+  console.log(`Сервер запущен на порту ${port}`);
+  console.log(`Публичный домен: ${publicDomain}`);
 });
