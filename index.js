@@ -47,7 +47,7 @@ const upload = multer({
 });
 
 // Middleware для аутентификации JWT
-const authenticate = (req, res, next) => {
+const authenticate = async (req, res, next) => {
   const token = req.headers.authorization?.split(" ")[1];
   if (!token) {
     console.error("Ошибка аутентификации: токен отсутствует");
@@ -56,6 +56,17 @@ const authenticate = (req, res, next) => {
   try {
     const decoded = jwt.verify(token, jwtSecret);
     console.log("Токен успешно проверен:", decoded);
+
+    // Проверяем токен в базе данных
+    const connection = await mysql.createConnection(dbConfig);
+    const [users] = await connection.execute("SELECT id, role FROM users1 WHERE id = ? AND token = ?", [decoded.id, token]);
+    await connection.end();
+
+    if (users.length === 0) {
+      console.error("Ошибка аутентификации: токен не найден в базе данных");
+      return res.status(401).json({ error: "Неверный токен" });
+    }
+
     req.user = decoded;
     next();
   } catch (error) {
@@ -92,8 +103,55 @@ async function testDatabaseConnection() {
           email VARCHAR(255) NOT NULL,
           phone VARCHAR(255) NOT NULL,
           profile_picture VARCHAR(255) DEFAULT NULL,
-          password VARCHAR(255) NOT NULL
+          password VARCHAR(255) NOT NULL,
+          token TEXT DEFAULT NULL
         ) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci
+      `);
+    } else {
+      // Проверяем, существует ли столбец token
+      const [columns] = await connection.execute("SHOW COLUMNS FROM users1 LIKE 'token'");
+      if (columns.length === 0) {
+        console.log("Столбец token не существует, добавляем...");
+        await connection.execute("ALTER TABLE users1 ADD token TEXT DEFAULT NULL");
+      }
+    }
+
+    // Создание таблицы properties, если не существует
+    const [propTables] = await connection.execute("SHOW TABLES LIKE 'properties'");
+    if (propTables.length === 0) {
+      console.log("Таблица properties не существует, создаём...");
+      await connection.execute(`
+        CREATE TABLE properties (
+          id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+          type_id VARCHAR(255) DEFAULT NULL,
+          condition VARCHAR(255) DEFAULT NULL,
+          series VARCHAR(255) DEFAULT NULL,
+          zhk_id VARCHAR(255) DEFAULT NULL,
+          document_id INT NOT NULL,
+          owner_name VARCHAR(255) DEFAULT NULL,
+          curator_ids TEXT DEFAULT NULL,
+          price TEXT NOT NULL,
+          unit VARCHAR(50) DEFAULT NULL,
+          rukprice VARCHAR(50) NOT NULL,
+          mkv VARCHAR(12) NOT NULL,
+          room VARCHAR(10) DEFAULT NULL,
+          phone VARCHAR(50) DEFAULT NULL,
+          district_id VARCHAR(255) DEFAULT NULL,
+          subdistrict_id VARCHAR(255) DEFAULT NULL,
+          address TEXT DEFAULT NULL,
+          notes TEXT DEFAULT NULL,
+          description TEXT DEFAULT NULL,
+          latitude DECIMAL(10,6) DEFAULT NULL,
+          longitude DECIMAL(10,6) DEFAULT NULL,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          photos TEXT DEFAULT NULL,
+          document VARCHAR(255) DEFAULT NULL,
+          status VARCHAR(50) DEFAULT NULL,
+          owner_id INT DEFAULT NULL,
+          etaj VARCHAR(255) NOT NULL,
+          etajnost VARCHAR(255) NOT NULL
+        ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
       `);
     }
 
@@ -110,15 +168,17 @@ async function testDatabaseConnection() {
 
     if (existingAdmin.length === 0) {
       console.log("Администратор не существует, создаём...");
+      const token = jwt.sign({ id: 1, role: "SUPER_ADMIN" }, jwtSecret, { expiresIn: "1h" });
       await connection.execute(
-        "INSERT INTO users1 (first_name, last_name, email, phone, role, password) VALUES (?, ?, ?, ?, ?, ?)",
-        ["Admin", "User", adminEmail, "123456789", "SUPER_ADMIN", hashedPassword]
+        "INSERT INTO users1 (first_name, last_name, email, phone, role, password, token) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ["Admin", "User", adminEmail, "123456789", "SUPER_ADMIN", hashedPassword, token]
       );
     } else {
-      console.log("Администратор существует, обновляем пароль...");
+      console.log("Администратор существует, обновляем пароль и токен...");
+      const token = jwt.sign({ id: existingAdmin[0].id, role: "SUPER_ADMIN" }, jwtSecret, { expiresIn: "1h" });
       await connection.execute(
-        "UPDATE users1 SET password = ? WHERE email = ?",
-        [hashedPassword, adminEmail]
+        "UPDATE users1 SET password = ?, token = ? WHERE email = ?",
+        [hashedPassword, token, adminEmail]
       );
     }
 
@@ -163,7 +223,7 @@ app.post("/api/admin/login", async (req, res) => {
   try {
     const connection = await mysql.createConnection(dbConfig);
     const [rows] = await connection.execute(
-      "SELECT id, first_name, last_name, email, phone, role, password, profile_picture AS photoUrl FROM users1 WHERE email = ?",
+      "SELECT id, first_name, last_name, email, phone, role, password, profile_picture AS photoUrl, token FROM users1 WHERE email = ?",
       [email]
     );
     console.log("Результат запроса к БД:", rows.length > 0 ? "Пользователь найден" : "Пользователь не найден");
@@ -189,6 +249,10 @@ app.post("/api/admin/login", async (req, res) => {
       return res.status(401).json({ error: "Неверный пароль" });
     }
 
+    // Генерируем новый токен и сохраняем его в базе данных
+    const token = jwt.sign({ id: user.id, role: user.role }, jwtSecret, { expiresIn: "1h" });
+    await connection.execute("UPDATE users1 SET token = ? WHERE id = ?", [token, user.id]);
+
     const userResponse = {
       id: user.id,
       first_name: user.first_name,
@@ -198,11 +262,10 @@ app.post("/api/admin/login", async (req, res) => {
       role: user.role,
       photoUrl: user.photoUrl ? `https://s3.twcstorage.ru/${bucketName}/${user.photoUrl}` : null,
       name: `${user.first_name} ${user.last_name}`.trim(),
+      token, // Возвращаем токен в ответе
     };
 
-    const token = jwt.sign({ id: user.id, role: user.role }, jwtSecret, { expiresIn: "1h" });
-    console.log("Логин успешен, токен сгенерирован");
-
+    console.log("Логин успешен, токен сгенерирован и сохранён");
     await connection.end();
     res.json({ message: "Авторизация успешна", user: userResponse, token });
   } catch (error) {
@@ -275,14 +338,18 @@ app.post("/api/users", authenticate, upload.single("photo"), async (req, res) =>
     const hashedPassword = await bcrypt.hash(password, 10);
     console.log("Хеш пароля для нового пользователя:", hashedPassword);
 
+    // Генерируем токен для нового пользователя
     const [result] = await connection.execute(
       "INSERT INTO users1 (first_name, last_name, email, phone, role, password, profile_picture) VALUES (?, ?, ?, ?, ?, ?, ?)",
       [first_name, last_name, email, phone, role, hashedPassword, profile_picture]
     );
-    console.log("Новый пользователь создан, ID:", result.insertId);
+    const userId = result.insertId;
+    const token = jwt.sign({ id: userId, role }, jwtSecret, { expiresIn: "1h" });
+    await connection.execute("UPDATE users1 SET token = ? WHERE id = ?", [token, userId]);
+    console.log("Новый пользователь создан, ID:", userId, "Токен сохранён:", token);
 
     const newUser = {
-      id: result.insertId,
+      id: userId,
       first_name,
       last_name,
       email,
@@ -290,6 +357,7 @@ app.post("/api/users", authenticate, upload.single("photo"), async (req, res) =>
       role,
       photoUrl: profile_picture ? `https://s3.twcstorage.ru/${bucketName}/${profile_picture}` : null,
       name: `${first_name} ${last_name}`.trim(),
+      token,
     };
 
     await connection.end();
@@ -420,9 +488,9 @@ app.delete("/api/users/:id", authenticate, async (req, res) => {
   }
 });
 
-// Создание новой опции (защищённый, SUPER_ADMIN или REALTOR)
-app.post("/api/options", authenticate, upload.fields([
-  { name: "images", maxCount: 10 },
+// Создание новой записи в properties (защищённый, SUPER_ADMIN или REALTOR)
+app.post("/api/properties", authenticate, upload.fields([
+  { name: "photos", maxCount: 10 },
   { name: "document", maxCount: 1 },
 ]), async (req, res) => {
   if (!["SUPER_ADMIN", "REALTOR"].includes(req.user.role)) {
@@ -430,8 +498,8 @@ app.post("/api/options", authenticate, upload.fields([
     return res.status(403).json({ error: "Доступ запрещен: требуется роль SUPER_ADMIN или REALTOR" });
   }
 
-  const { type, area, price, status, owner, address, description, curator } = req.body;
-  const images = req.files["images"] ? req.files["images"].map((file) => ({
+  const { type_id, condition, series, zhk_id, owner_name, curator_ids, price, unit, rukprice, mkv, room, phone, district_id, subdistrict_id, address, notes, description, status, owner_id, etaj, etajnost } = req.body;
+  const photos = req.files["photos"] ? req.files["photos"].map((file) => ({
     filename: `${Date.now()}-${Math.round(Math.random() * 1e9)}${path.extname(file.originalname)}`,
     buffer: file.buffer,
     mimetype: file.mimetype,
@@ -442,22 +510,22 @@ app.post("/api/options", authenticate, upload.fields([
     mimetype: req.files["document"][0].mimetype,
   } : null;
 
-  if (!type || !area || !price || !status || !owner || !address || !description || !curator) {
-    console.error("Ошибка: не все поля заполнены");
-    return res.status(400).json({ error: "Все поля обязательны" });
+  if (!type_id || !price || !rukprice || !mkv || !address || !etaj || !etajnost) {
+    console.error("Ошибка: не все обязательные поля заполнены");
+    return res.status(400).json({ error: "Все обязательные поля (type_id, price, rukprice, mkv, address, etaj, etajnost) должны быть заполнены" });
   }
 
   try {
     // Загрузка изображений в S3
-    for (const image of images) {
+    for (const photo of photos) {
       const uploadParams = {
         Bucket: bucketName,
-        Key: image.filename,
-        Body: image.buffer,
-        ContentType: image.mimetype,
+        Key: photo.filename,
+        Body: photo.buffer,
+        ContentType: photo.mimetype,
       };
       await s3Client.send(new PutObjectCommand(uploadParams));
-      console.log(`Изображение загружено в S3: ${image.filename}`);
+      console.log(`Изображение загружено в S3: ${photo.filename}`);
     }
 
     // Загрузка документа в S3, если есть
@@ -474,37 +542,58 @@ app.post("/api/options", authenticate, upload.fields([
 
     const connection = await mysql.createConnection(dbConfig);
     const [result] = await connection.execute(
-      "INSERT INTO options (type, area, price, status, owner, address, description, curator, images, document, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())",
-      [type, area, price, status, owner, address, description, curator, JSON.stringify(images.map(img => img.filename)), document ? document.filename : null]
+      `INSERT INTO properties (
+        type_id, condition, series, zhk_id, document_id, owner_name, curator_ids, price, unit, rukprice, mkv, room, phone, 
+        district_id, subdistrict_id, address, notes, description, latitude, longitude, photos, document, status, owner_id, etaj, etajnost
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        type_id, condition || null, series || null, zhk_id || null, 0, owner_name || null, curator_ids || null, price, unit || null, rukprice, mkv,
+        room || null, phone || null, district_id || null, subdistrict_id || null, address, notes || null, description || null, null, null,
+        JSON.stringify(photos.map(img => img.filename)), document ? document.filename : null, status || null, owner_id || null, etaj, etajnost
+      ]
     );
-    console.log("Новая опция создана, ID:", result.insertId);
+    console.log("Новая запись создана в properties, ID:", result.insertId);
 
-    const newOption = {
+    const newProperty = {
       id: result.insertId,
-      type,
-      area,
+      type_id,
+      condition,
+      series,
+      zhk_id,
+      document_id: 0,
+      owner_name,
+      curator_ids,
       price,
-      status,
-      owner,
+      unit,
+      rukprice,
+      mkv,
+      room,
+      phone,
+      district_id,
+      subdistrict_id,
       address,
+      notes,
       description,
-      curator,
-      images: images.map((img) => `https://s3.twcstorage.ru/${bucketName}/${img.filename}`),
+      status,
+      owner_id,
+      etaj,
+      etajnost,
+      photos: photos.map((img) => `https://s3.twcstorage.ru/${bucketName}/${img.filename}`),
       document: document ? `https://s3.twcstorage.ru/${bucketName}/${document.filename}` : null,
       date: new Date().toLocaleDateString('ru-RU'),
       time: new Date().toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }),
     };
 
     await connection.end();
-    res.json(newOption);
+    res.json(newProperty);
   } catch (error) {
-    console.error("Ошибка создания опции:", error.message);
+    console.error("Ошибка создания записи в properties:", error.message);
     res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
   }
 });
 
-// Удаление опции (защищённый, только SUPER_ADMIN)
-app.delete("/api/options/:id", authenticate, async (req, res) => {
+// Удаление записи из properties (защищённый, только SUPER_ADMIN)
+app.delete("/api/properties/:id", authenticate, async (req, res) => {
   if (req.user.role !== "SUPER_ADMIN") {
     console.error("Доступ запрещён: не SUPER_ADMIN");
     return res.status(403).json({ error: "Доступ запрещен: требуется роль SUPER_ADMIN" });
@@ -514,17 +603,17 @@ app.delete("/api/options/:id", authenticate, async (req, res) => {
 
   try {
     const connection = await mysql.createConnection(dbConfig);
-    const [options] = await connection.execute("SELECT images, document FROM options WHERE id = ?", [id]);
-    if (options.length === 0) {
+    const [properties] = await connection.execute("SELECT photos, document FROM properties WHERE id = ?", [id]);
+    if (properties.length === 0) {
       await connection.end();
-      console.error("Опция не найдена по ID:", id);
-      return res.status(404).json({ error: "Вариант не найден" });
+      console.error("Запись не найдена по ID:", id);
+      return res.status(404).json({ error: "Запись не найдена" });
     }
 
-    const { images, document } = options[0];
-    if (images) {
-      const imageFiles = JSON.parse(images);
-      for (const img of imageFiles) {
+    const { photos, document } = properties[0];
+    if (photos) {
+      const photoFiles = JSON.parse(photos);
+      for (const img of photoFiles) {
         await s3Client.send(new DeleteObjectCommand({ Bucket: bucketName, Key: img }));
         console.log(`Изображение удалено из S3: ${img}`);
       }
@@ -534,42 +623,44 @@ app.delete("/api/options/:id", authenticate, async (req, res) => {
       console.log(`Документ удалён из S3: ${document}`);
     }
 
-    const [result] = await connection.execute("DELETE FROM options WHERE id = ?", [id]);
+    const [result] = await connection.execute("DELETE FROM properties WHERE id = ?", [id]);
     if (result.affectedRows === 0) {
       await connection.end();
-      return res.status(404).json({ error: "Вариант не найден" });
+      return res.status(404).json({ error: "Запись не найдена" });
     }
-    console.log("Опция удалена, ID:", id);
+    console.log("Запись удалена, ID:", id);
 
     await connection.end();
-    res.json({ message: "Вариант успешно удален" });
+    res.json({ message: "Запись успешно удалена" });
   } catch (error) {
-    console.error("Ошибка удаления опции:", error.message);
+    console.error("Ошибка удаления записи:", error.message);
     res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
   }
 });
 
-// Получение всех опций (защищённый)
-app.get("/api/options", authenticate, async (req, res) => {
+// Получение всех записей из properties (защищённый)
+app.get("/api/properties", authenticate, async (req, res) => {
   try {
     const connection = await mysql.createConnection(dbConfig);
     const [rows] = await connection.execute(
-      "SELECT id, type, area, price, status, owner, address, description, curator, images, document, created_at FROM options"
+      `SELECT id, type_id, condition, series, zhk_id, document_id, owner_name, curator_ids, price, unit, rukprice, mkv, room, phone, 
+       district_id, subdistrict_id, address, notes, description, latitude, longitude, created_at, photos, document, status, owner_id, etaj, etajnost 
+       FROM properties`
     );
-    console.log("Опции получены из БД:", rows.length);
+    console.log("Записи получены из properties:", rows.length);
 
-    const options = rows.map((row) => ({
+    const properties = rows.map((row) => ({
       ...row,
-      images: row.images ? JSON.parse(row.images).map((img) => `https://s3.twcstorage.ru/${bucketName}/${img}`) : [],
+      photos: row.photos ? JSON.parse(row.photos).map((img) => `https://s3.twcstorage.ru/${bucketName}/${img}`) : [],
       document: row.document ? `https://s3.twcstorage.ru/${bucketName}/${row.document}` : null,
       date: new Date(row.created_at).toLocaleDateString('ru-RU'),
       time: new Date(row.created_at).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }),
     }));
 
     await connection.end();
-    res.json(options);
+    res.json(properties);
   } catch (error) {
-    console.error("Ошибка получения опций:", error.message);
+    console.error("Ошибка получения записей:", error.message);
     res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
   }
 });
@@ -579,15 +670,15 @@ app.get("/api/listings", authenticate, async (req, res) => {
   try {
     const connection = await mysql.createConnection(dbConfig);
     const [rows] = await connection.execute(
-      "SELECT id, type, area, price, status, address, created_at FROM options"
+      "SELECT id, type_id, price, rukprice, mkv, status, address, created_at FROM properties"
     );
-    console.log("Объявления получены из БД:", rows.length);
+    console.log("Объявления получены из properties:", rows.length);
 
     const listings = rows.map((row) => ({
       id: row.id,
       date: new Date(row.created_at).toLocaleDateString('ru-RU'),
       time: new Date(row.created_at).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }),
-      area: row.area,
+      area: row.mkv,
       district: row.address,
       price: row.price,
       status: row.status,
