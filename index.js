@@ -143,8 +143,9 @@ async function getCuratorNames(curatorIds, connection) {
 
 // Тестирование подключения к базе данных и настройка
 async function testDatabaseConnection() {
+  let connection;
   try {
-    const connection = await pool.getConnection();
+    connection = await pool.getConnection();
     console.log("Подключение к базе данных успешно установлено!");
 
     // Создание таблицы users1, если она не существует
@@ -214,6 +215,30 @@ async function testDatabaseConnection() {
           etajnost VARCHAR(255) NOT NULL
         ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
       `);
+    }
+
+    // Clean up invalid curator_ids in properties table
+    console.log("Проверка и очистка curator_ids в таблице properties...");
+    const [invalidCuratorIds] = await connection.execute(
+      "SELECT id, curator_ids FROM properties WHERE curator_ids IS NOT NULL AND curator_ids NOT LIKE '[%' AND curator_ids NOT LIKE '%]'"
+    );
+    if (invalidCuratorIds.length > 0) {
+      console.warn("Найдены некорректные curator_ids:", invalidCuratorIds);
+      await connection.execute(
+        "UPDATE properties SET curator_ids = CONCAT('[\"', curator_ids, '\"]') WHERE curator_ids IS NOT NULL AND curator_ids NOT LIKE '[%' AND curator_ids NOT LIKE '%]'"
+      );
+      console.log("Некорректные curator_ids преобразованы в JSON-массив");
+    }
+
+    const [emptyCuratorIds] = await connection.execute(
+      "SELECT id, curator_ids FROM properties WHERE curator_ids = '' OR curator_ids = '[]'"
+    );
+    if (emptyCuratorIds.length > 0) {
+      console.warn("Найдены пустые curator_ids:", emptyCuratorIds);
+      await connection.execute(
+        "UPDATE properties SET curator_ids = NULL WHERE curator_ids = '' OR curator_ids = '[]'"
+      );
+      console.log("Пустые curator_ids установлены в NULL");
     }
 
     // Создание таблицы jk, если она не существует
@@ -291,12 +316,13 @@ async function testDatabaseConnection() {
       const [tablesList] = await connection.execute("SHOW TABLES");
       console.log("Таблицы в базе данных:", tablesList.map((t) => t[`Tables_in_${dbConfig.database}`]));
     }
-    connection.release();
   } catch (error) {
     console.error("Ошибка подключения к базе данных:", error.message);
     if (error.code === "ECONNREFUSED") {
       console.error("Сервер MySQL не запущен или неверный хост/порт.");
     }
+  } finally {
+    if (connection) connection.release();
   }
 }
 
@@ -317,8 +343,9 @@ app.post("/api/admin/login", async (req, res) => {
     return res.status(400).json({ error: "Email и пароль обязательны" });
   }
 
+  let connection;
   try {
-    const connection = await pool.getConnection();
+    connection = await pool.getConnection();
     const [rows] = await connection.execute(
       "SELECT id, first_name, last_name, email, phone, role, password, profile_picture AS photoUrl, token FROM users1 WHERE email = ?",
       [email]
@@ -326,14 +353,12 @@ app.post("/api/admin/login", async (req, res) => {
     console.log("Результат запроса к базе данных:", rows.length > 0 ? "Пользователь найден" : "Пользователь не найден");
 
     if (rows.length === 0) {
-      connection.release();
       return res.status(401).json({ error: "Неверный email или пользователь не найден" });
     }
 
     const user = rows[0];
     if (!user.password) {
       console.error("Ошибка: Пароль пользователя не установлен");
-      connection.release();
       return res.status(500).json({ error: "Пароль пользователя не установлен" });
     }
 
@@ -342,7 +367,6 @@ app.post("/api/admin/login", async (req, res) => {
     console.log("Результат сравнения пароля:", isPasswordValid);
 
     if (!isPasswordValid) {
-      connection.release();
       return res.status(401).json({ error: "Неверный пароль" });
     }
 
@@ -362,25 +386,28 @@ app.post("/api/admin/login", async (req, res) => {
     };
 
     console.log("Вход успешен, токен сгенерирован и сохранен");
-    connection.release();
     res.json({ message: "Авторизация успешна", user: userResponse, token });
   } catch (error) {
     console.error("Ошибка входа:", error.message);
     res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
   }
 });
 
 // Эндпоинт для выхода
 app.post("/api/logout", authenticate, async (req, res) => {
+  let connection;
   try {
-    const connection = await pool.getConnection();
+    connection = await pool.getConnection();
     await connection.execute("UPDATE users1 SET token = NULL WHERE id = ?", [req.user.id]);
-    connection.release();
     console.log("Выход успешен, токен аннулирован для пользователя ID:", req.user.id);
     res.json({ message: "Выход успешен" });
   } catch (error) {
     console.error("Ошибка выхода:", error.message);
     res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
   }
 });
 
@@ -391,13 +418,13 @@ app.get("/api/users", authenticate, async (req, res) => {
     return res.status(403).json({ error: "Доступ запрещен: Требуется роль SUPER_ADMIN" });
   }
 
+  let connection;
   try {
-    const connection = await pool.getConnection();
+    connection = await pool.getConnection();
     const [rows] = await connection.execute(
       "SELECT id, first_name, last_name, email, phone, role, profile_picture AS photoUrl FROM users1"
     );
     console.log("Пользователи получены из базы данных:", rows.length);
-    connection.release();
     res.json(
       rows.map((user) => ({
         ...user,
@@ -408,6 +435,8 @@ app.get("/api/users", authenticate, async (req, res) => {
   } catch (error) {
     console.error("Ошибка получения пользователей:", error.message);
     res.status(500).json({ error: "Внутренняя ошибка сервера" });
+  } finally {
+    if (connection) connection.release();
   }
 });
 
@@ -437,12 +466,12 @@ app.post("/api/users", authenticate, upload.single("photo"), async (req, res) =>
   const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
   const profile_picture = photo ? `${uniqueSuffix}${path.extname(photo.originalname)}` : null;
 
+  let connection;
   try {
-    const connection = await pool.getConnection();
+    connection = await pool.getConnection();
 
     const [existingUser] = await connection.execute("SELECT id FROM users1 WHERE email = ?", [email]);
     if (existingUser.length > 0) {
-      connection.release();
       console.error("Ошибка: Email уже существует", { email });
       return res.status(400).json({ error: "Пользователь с таким email уже существует" });
     }
@@ -482,11 +511,12 @@ app.post("/api/users", authenticate, upload.single("photo"), async (req, res) =>
       token,
     };
 
-    connection.release();
     res.json(newUser);
   } catch (error) {
     console.error("Ошибка создания пользователя:", error.message);
     res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
   }
 });
 
@@ -512,18 +542,17 @@ app.put("/api/users/:id", authenticate, upload.single("photo"), async (req, res)
   const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
   let profile_picture = null;
 
+  let connection;
   try {
-    const connection = await pool.getConnection();
+    connection = await pool.getConnection();
     const [existingUsers] = await connection.execute("SELECT profile_picture FROM users1 WHERE id = ?", [id]);
     if (existingUsers.length === 0) {
-      connection.release();
       console.error("Пользователь не найден по ID:", id);
       return res.status(404).json({ error: "Пользователь не найден" });
     }
 
     const [emailCheck] = await connection.execute("SELECT id FROM users1 WHERE email = ? AND id != ?", [email, id]);
     if (emailCheck.length > 0) {
-      connection.release();
       console.error("Ошибка: Email уже существует", { email });
       return res.status(400).json({ error: "Пользователь с таким email уже существует" });
     }
@@ -554,7 +583,6 @@ app.put("/api/users/:id", authenticate, upload.single("photo"), async (req, res)
     );
 
     if (result.affectedRows === 0) {
-      connection.release();
       return res.status(404).json({ error: "Пользователь не найден" });
     }
     console.log("Пользователь обновлен, ID:", id);
@@ -570,11 +598,12 @@ app.put("/api/users/:id", authenticate, upload.single("photo"), async (req, res)
       name: `${first_name} ${last_name}`.trim(),
     };
 
-    connection.release();
     res.json(updatedUser);
   } catch (error) {
     console.error("Ошибка обновления пользователя:", error.message);
     res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
   }
 });
 
@@ -587,11 +616,11 @@ app.delete("/api/users/:id", authenticate, async (req, res) => {
 
   const { id } = req.params;
 
+  let connection;
   try {
-    const connection = await pool.getConnection();
+    connection = await pool.getConnection();
     const [users] = await connection.execute("SELECT profile_picture FROM users1 WHERE id = ?", [id]);
     if (users.length === 0) {
-      connection.release();
       console.error("Пользователь не найден по ID:", id);
       return res.status(404).json({ error: "Пользователь не найден" });
     }
@@ -604,30 +633,32 @@ app.delete("/api/users/:id", authenticate, async (req, res) => {
 
     const [result] = await connection.execute("DELETE FROM users1 WHERE id = ?", [id]);
     if (result.affectedRows === 0) {
-      connection.release();
       return res.status(404).json({ error: "Пользователь не найден" });
     }
     console.log("Пользователь удален, ID:", id);
 
-    connection.release();
     res.json({ message: "Пользователь успешно удален" });
   } catch (error) {
     console.error("Ошибка удаления пользователя:", error.message);
     res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
   }
 });
 
 // Получение всех ЖК (защищено)
 app.get("/api/jk", authenticate, async (req, res) => {
+  let connection;
   try {
-    const connection = await pool.getConnection();
+    connection = await pool.getConnection();
     const [rows] = await connection.execute("SELECT id, name FROM jk");
     console.log("ЖК получены:", rows.length);
-    connection.release();
     res.json(rows);
   } catch (error) {
     console.error("Ошибка получения ЖК:", error.message);
     res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
   }
 });
 
@@ -649,8 +680,9 @@ app.post("/api/jk", authenticate, upload.single("photo"), async (req, res) => {
   const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
   const photoFilename = photo ? `${uniqueSuffix}${path.extname(photo.originalname)}` : null;
 
+  let connection;
   try {
-    const connection = await pool.getConnection();
+    connection = await pool.getConnection();
 
     if (photo) {
       const uploadParams = {
@@ -669,7 +701,6 @@ app.post("/api/jk", authenticate, upload.single("photo"), async (req, res) => {
     );
 
     console.log("Создан новый ЖК, ID:", result.insertId);
-    connection.release();
 
     const newJk = {
       id: result.insertId,
@@ -683,6 +714,8 @@ app.post("/api/jk", authenticate, upload.single("photo"), async (req, res) => {
   } catch (error) {
     console.error("Ошибка создания ЖК:", error.message);
     res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
   }
 });
 
@@ -705,12 +738,12 @@ app.put("/api/jk/:id", authenticate, upload.single("photo"), async (req, res) =>
   const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
   let photoFilename = null;
 
+  let connection;
   try {
-    const connection = await pool.getConnection();
+    connection = await pool.getConnection();
     const [existingJk] = await connection.execute("SELECT photo FROM jk WHERE id = ?", [id]);
 
     if (existingJk.length === 0) {
-      connection.release();
       console.error("ЖК не найден по ID:", id);
       return res.status(404).json({ error: "ЖК не найден" });
     }
@@ -741,12 +774,10 @@ app.put("/api/jk/:id", authenticate, upload.single("photo"), async (req, res) =>
     );
 
     if (result.affectedRows === 0) {
-      connection.release();
       return res.status(404).json({ error: "ЖК не найден" });
     }
 
     console.log("ЖК обновлен, ID:", id);
-    connection.release();
 
     const updatedJk = {
       id: parseInt(id),
@@ -760,6 +791,8 @@ app.put("/api/jk/:id", authenticate, upload.single("photo"), async (req, res) =>
   } catch (error) {
     console.error("Ошибка обновления ЖК:", error.message);
     res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
   }
 });
 
@@ -772,12 +805,12 @@ app.delete("/api/jk/:id", authenticate, async (req, res) => {
 
   const { id } = req.params;
 
+  let connection;
   try {
-    const connection = await pool.getConnection();
+    connection = await pool.getConnection();
     const [jk] = await connection.execute("SELECT photo FROM jk WHERE id = ?", [id]);
 
     if (jk.length === 0) {
-      connection.release();
       console.error("ЖК не найден по ID:", id);
       return res.status(404).json({ error: "ЖК не найден" });
     }
@@ -790,48 +823,52 @@ app.delete("/api/jk/:id", authenticate, async (req, res) => {
 
     const [result] = await connection.execute("DELETE FROM jk WHERE id = ?", [id]);
     if (result.affectedRows === 0) {
-      connection.release();
       return res.status(404).json({ error: "ЖК не найден" });
     }
 
     console.log("ЖК удален, ID:", id);
-    connection.release();
     res.json({ message: "ЖК успешно удален" });
   } catch (error) {
     console.error("Ошибка удаления ЖК:", error.message);
     res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
   }
 });
 
 // Получение всех районов (защищено)
 app.get("/api/districts", authenticate, async (req, res) => {
+  let connection;
   try {
-    const connection = await pool.getConnection();
+    connection = await pool.getConnection();
     const [rows] = await connection.execute("SELECT id, name FROM districts");
     console.log("Районы получены:", rows.length);
-    connection.release();
     res.json(rows);
   } catch (error) {
     console.error("Ошибка получения районов:", error.message);
     res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
   }
 });
 
 // Получение микрорайонов по district_id (защищено)
 app.get("/api/subdistricts", authenticate, async (req, res) => {
   const { district_id } = req.query;
+  let connection;
   try {
-    const connection = await pool.getConnection();
+    connection = await pool.getConnection();
     const [rows] = await connection.execute(
       "SELECT id, name FROM subdistricts WHERE district_id = ?",
       [district_id]
     );
     console.log("Микрорайоны получены:", rows.length);
-    connection.release();
     res.json(rows);
   } catch (error) {
     console.error("Ошибка получения микрорайонов:", error.message);
     res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
   }
 });
 
@@ -867,7 +904,7 @@ app.post("/api/properties", authenticate, upload.fields([
     return res.status(400).json({ error: "Поля price, rukprice, mkv, etaj, etajnost должны быть числовыми" });
   }
 
-  let finalCuratorIds = curator_ids;
+  let finalCuratorIds = null;
   if (req.user.role === "USER") {
     finalCuratorIds = JSON.stringify([req.user.id.toString()]);
     console.log("Риелтор: установка curator_ids на текущего пользователя", finalCuratorIds);
@@ -875,24 +912,35 @@ app.post("/api/properties", authenticate, upload.fields([
     try {
       const parsedCurators = JSON.parse(curator_ids);
       if (!Array.isArray(parsedCurators)) {
-        throw new Error("curator_ids должен быть массивом");
+        console.error("Ошибка: curator_ids должен быть массивом", { curator_ids });
+        return res.status(400).json({ error: "curator_ids должен быть корректным JSON-массивом" });
       }
-      finalCuratorIds = JSON.stringify(parsedCurators);
+      // Validate curator IDs exist and have USER role
+      const connection = await pool.getConnection();
+      const [curatorCheck] = await connection.execute(
+        "SELECT id FROM users1 WHERE id IN (?) AND role = 'USER'",
+        [parsedCurators.map(id => id.toString())]
+      );
+      if (curatorCheck.length !== parsedCurators.length) {
+        connection.release();
+        console.error("Ошибка: Один или несколько кураторов не найдены или не являются пользователями", { curator_ids });
+        return res.status(400).json({ error: "Один или несколько кураторов не найдены или не являются пользователями" });
+      }
+      finalCuratorIds = JSON.stringify(parsedCurators.map(id => id.toString()));
+      connection.release();
     } catch (error) {
-      console.error("Ошибка парсинга curator_ids:", error.message);
+      console.error("Ошибка парсинга curator_ids:", error.message, { curator_ids });
       return res.status(400).json({ error: "curator_ids должен быть корректным JSON-массивом" });
     }
-  } else {
-    finalCuratorIds = null;
   }
 
+  let connection;
   try {
-    const connection = await pool.getConnection();
+    connection = await pool.getConnection();
 
     if (zhk_id) {
       const [jkCheck] = await connection.execute("SELECT id FROM jk WHERE id = ?", [zhk_id]);
       if (jkCheck.length === 0) {
-        connection.release();
         return res.status(400).json({ error: "Недействительный ID ЖК" });
       }
     }
@@ -900,7 +948,6 @@ app.post("/api/properties", authenticate, upload.fields([
     if (district_id) {
       const [districtCheck] = await connection.execute("SELECT id FROM districts WHERE id = ?", [district_id]);
       if (districtCheck.length === 0) {
-        connection.release();
         return res.status(400).json({ error: "Недействительный ID района" });
       }
     }
@@ -908,7 +955,6 @@ app.post("/api/properties", authenticate, upload.fields([
     if (subdistrict_id) {
       const [subdistrictCheck] = await connection.execute("SELECT id FROM subdistricts WHERE id = ? AND district_id = ?", [subdistrict_id, district_id || null]);
       if (subdistrictCheck.length === 0) {
-        connection.release();
         return res.status(400).json({ error: "Недействительный ID микрорайона или микрорайон не принадлежит выбранному району" });
       }
     }
@@ -983,7 +1029,7 @@ app.post("/api/properties", authenticate, upload.fields([
       zhk_id,
       document_id: 0,
       owner_name,
-      curator_ids: finalCuratorIds,
+      curator_ids: finalCuratorIds ? JSON.parse(finalCuratorIds) : [],
       curator_name: curatorNames.join(", "),
       price,
       unit,
@@ -1006,11 +1052,12 @@ app.post("/api/properties", authenticate, upload.fields([
       time: new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" }),
     };
 
-    connection.release();
     res.json(newProperty);
   } catch (error) {
     console.error("Ошибка создания объекта недвижимости:", error.message);
     res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
   }
 });
 
@@ -1051,11 +1098,11 @@ app.put("/api/properties/:id", authenticate, upload.fields([
     return res.status(400).json({ error: "Поля price, rukprice, mkv, etaj, etajnost должны быть числовыми" });
   }
 
+  let connection;
   try {
-    const connection = await pool.getConnection();
+    connection = await pool.getConnection();
     const [existingProperties] = await connection.execute("SELECT photos, document, curator_ids, created_at FROM properties WHERE id = ?", [id]);
     if (existingProperties.length === 0) {
-      connection.release();
       console.error("Объект недвижимости не найден по ID:", id);
       return res.status(404).json({ error: "Объект недвижимости не найден" });
     }
@@ -1072,7 +1119,6 @@ app.put("/api/properties/:id", authenticate, upload.fields([
         currentCuratorIds = [existingProperty.curator_ids];
       }
       if (!currentCuratorIds.includes(req.user.id.toString())) {
-        connection.release();
         console.error("Ошибка: Риелтор не является куратором этого объекта", { id, curator_ids: existingProperty.curator_ids, userId: req.user.id });
         return res.status(403).json({ error: "У вас нет прав для редактирования этого объекта" });
       }
@@ -1081,7 +1127,6 @@ app.put("/api/properties/:id", authenticate, upload.fields([
     if (zhk_id) {
       const [jkCheck] = await connection.execute("SELECT id FROM jk WHERE id = ?", [zhk_id]);
       if (jkCheck.length === 0) {
-        connection.release();
         return res.status(400).json({ error: "Недействительный ID ЖК" });
       }
     }
@@ -1089,7 +1134,6 @@ app.put("/api/properties/:id", authenticate, upload.fields([
     if (district_id) {
       const [districtCheck] = await connection.execute("SELECT id FROM districts WHERE id = ?", [district_id]);
       if (districtCheck.length === 0) {
-        connection.release();
         return res.status(400).json({ error: "Недействительный ID района" });
       }
     }
@@ -1097,7 +1141,6 @@ app.put("/api/properties/:id", authenticate, upload.fields([
     if (subdistrict_id) {
       const [subdistrictCheck] = await connection.execute("SELECT id FROM subdistricts WHERE id = ? AND district_id = ?", [subdistrict_id, district_id || null]);
       if (subdistrictCheck.length === 0) {
-        connection.release();
         return res.status(400).json({ error: "Недействительный ID микрорайона или микрорайон не принадлежит выбранному району" });
       }
     }
@@ -1107,11 +1150,21 @@ app.put("/api/properties/:id", authenticate, upload.fields([
       try {
         const parsedCurators = JSON.parse(curator_ids);
         if (!Array.isArray(parsedCurators)) {
-          throw new Error("curator_ids должен быть массивом");
+          console.error("Ошибка: curator_ids должен быть массивом", { curator_ids });
+          return res.status(400).json({ error: "curator_ids должен быть корректным JSON-массивом" });
         }
-        finalCuratorIds = JSON.stringify(parsedCurators);
+        // Validate curator IDs exist and have USER role
+        const [curatorCheck] = await connection.execute(
+          "SELECT id FROM users1 WHERE id IN (?) AND role = 'USER'",
+          [parsedCurators.map(id => id.toString())]
+        );
+        if (curatorCheck.length !== parsedCurators.length) {
+          console.error("Ошибка: Один или несколько кураторов не найдены или не являются пользователями", { curator_ids });
+          return res.status(400).json({ error: "Один или несколько кураторов не найдены или не являются пользователями" });
+        }
+        finalCuratorIds = JSON.stringify(parsedCurators.map(id => id.toString()));
       } catch (error) {
-        console.error("Ошибка парсинга curator_ids:", error.message);
+        console.error("Ошибка парсинга curator_ids:", error.message, { curator_ids });
         return res.status(400).json({ error: "curator_ids должен быть корректным JSON-массивом" });
       }
     } else if (req.user.role === "USER") {
@@ -1227,7 +1280,6 @@ app.put("/api/properties/:id", authenticate, upload.fields([
     );
 
     if (result.affectedRows === 0) {
-      connection.release();
       return res.status(404).json({ error: "Объект недвижимости не найден" });
     }
 
@@ -1242,7 +1294,7 @@ app.put("/api/properties/:id", authenticate, upload.fields([
       zhk_id,
       document_id: 0,
       owner_name,
-      curator_ids: finalCuratorIds,
+      curator_ids: finalCuratorIds ? JSON.parse(finalCuratorIds) : [],
       curator_name: curatorNames.join(", "),
       price,
       unit,
@@ -1265,11 +1317,12 @@ app.put("/api/properties/:id", authenticate, upload.fields([
       time: new Date(existingProperty.created_at).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" }),
     };
 
-    connection.release();
     res.json(updatedProperty);
   } catch (error) {
     console.error("Ошибка обновления объекта недвижимости:", error.message);
     res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
   }
 });
 
@@ -1282,11 +1335,11 @@ app.delete("/api/properties/:id", authenticate, async (req, res) => {
 
   const { id } = req.params;
 
+  let connection;
   try {
-    const connection = await pool.getConnection();
+    connection = await pool.getConnection();
     const [properties] = await connection.execute("SELECT photos, document, curator_ids FROM properties WHERE id = ?", [id]);
     if (properties.length === 0) {
-      connection.release();
       console.error("Объект недвижимости не найден по ID:", id);
       return res.status(404).json({ error: "Объект недвижимости не найден" });
     }
@@ -1303,7 +1356,6 @@ app.delete("/api/properties/:id", authenticate, async (req, res) => {
         currentCuratorIds = [existingProperty.curator_ids];
       }
       if (!currentCuratorIds.includes(req.user.id.toString())) {
-        connection.release();
         console.error("Ошибка: Риелтор не является куратором этого объекта", { id, curator_ids: existingProperty.curator_ids, userId: req.user.id });
         return res.status(403).json({ error: "У вас нет прав для удаления этого объекта" });
       }
@@ -1341,16 +1393,16 @@ app.delete("/api/properties/:id", authenticate, async (req, res) => {
 
     const [result] = await connection.execute("DELETE FROM properties WHERE id = ?", [id]);
     if (result.affectedRows === 0) {
-      connection.release();
       return res.status(404).json({ error: "Объект недвижимости не найден" });
     }
     console.log("Объект недвижимости удален, ID:", id);
 
-    connection.release();
     res.json({ message: "Объект недвижимости успешно удален" });
   } catch (error) {
     console.error("Ошибка удаления объекта недвижимости:", error.message);
     res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
   }
 });
 
@@ -1385,8 +1437,9 @@ app.get("/api/properties", authenticate, async (req, res) => {
     }
   }
 
+  let connection;
   try {
-    const connection = await pool.getConnection();
+    connection = await pool.getConnection();
     let query = `SELECT p.* FROM properties p`;
     let queryParams = [];
 
@@ -1448,18 +1501,20 @@ app.get("/api/properties", authenticate, async (req, res) => {
       };
     }));
 
-    connection.release();
     res.json(properties);
   } catch (error) {
     console.error("Ошибка получения объектов недвижимости:", error.message);
     res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
   }
 });
 
 // Получение всех объявлений для AdminDashboard (защищено)
 app.get("/api/listings", authenticate, async (req, res) => {
+  let connection;
   try {
-    const connection = await pool.getConnection();
+    connection = await pool.getConnection();
     const [rows] = await connection.execute(
       "SELECT id, type_id, price, rukprice, mkv, status, address, created_at FROM properties"
     );
@@ -1475,18 +1530,20 @@ app.get("/api/listings", authenticate, async (req, res) => {
       status: row.status,
     }));
 
-    connection.release();
     res.json(listings);
   } catch (error) {
     console.error("Ошибка получения объявлений:", error.message);
     res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
   }
 });
 
 // Получение всех районов и микрорайонов
 app.get("/api/raions", authenticate, async (req, res) => {
+  let connection;
   try {
-    const connection = await pool.getConnection();
+    connection = await pool.getConnection();
     
     const [districts] = await connection.execute("SELECT id, name, NULL AS parentRaionId FROM districts");
     const [subdistricts] = await connection.execute("SELECT id, name, district_id AS parentRaionId FROM subdistricts");
@@ -1497,11 +1554,12 @@ app.get("/api/raions", authenticate, async (req, res) => {
     ];
     
     console.log("Районы и микрорайоны получены:", raions.length);
-    connection.release();
     res.json(raions);
   } catch (error) {
     console.error("Ошибка получения районов и микрорайонов:", error.message);
     res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
   }
 });
 
@@ -1518,18 +1576,20 @@ app.post("/api/raions", authenticate, async (req, res) => {
     return res.status(400).json({ error: "Поле name обязательно" });
   }
 
+  let connection;
   try {
-    const connection = await pool.getConnection();
+    connection = await pool.getConnection();
     const [result] = await connection.execute(
       "INSERT INTO districts (name) VALUES (?)",
       [name]
     );
     console.log("Создан новый район, ID:", result.insertId);
-    connection.release();
     res.json({ id: result.insertId, name, parentRaionId: null, isRaion: true });
   } catch (error) {
     console.error("Ошибка создания района:", error.message);
     res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
   }
 });
 
@@ -1546,11 +1606,11 @@ app.post("/api/subraions", authenticate, async (req, res) => {
     return res.status(400).json({ error: "Поля name и parentRaionId обязательны" });
   }
 
+  let connection;
   try {
-    const connection = await pool.getConnection();
+    connection = await pool.getConnection();
     const [districtCheck] = await connection.execute("SELECT id FROM districts WHERE id = ?", [parentRaionId]);
     if (districtCheck.length === 0) {
-      connection.release();
       return res.status(400).json({ error: "Недействительный ID района" });
     }
 
@@ -1559,15 +1619,15 @@ app.post("/api/subraions", authenticate, async (req, res) => {
       [name, parentRaionId]
     );
     console.log("Создан новый микрорайон, ID:", result.insertId);
-    connection.release();
     res.json({ id: result.insertId, name, parentRaionId, isRaion: false });
   } catch (error) {
     console.error("Ошибка создания микрорайона:", error.message);
     res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
   }
 });
 
-// Обновление района
 app.put("/api/raions/:id", authenticate, async (req, res) => {
   if (req.user.role !== "SUPER_ADMIN") {
     console.error("Доступ запрещен: Требуется роль SUPER_ADMIN");
@@ -1581,22 +1641,24 @@ app.put("/api/raions/:id", authenticate, async (req, res) => {
     return res.status(400).json({ error: "Поле name обязательно" });
   }
 
+  let connection;
   try {
-    const connection = await pool.getConnection();
+    connection = await pool.getConnection();
     const [result] = await connection.execute(
       "UPDATE districts SET name = ? WHERE id = ?",
       [name, id]
     );
     if (result.affectedRows === 0) {
-      connection.release();
+      console.error("Район не найден по ID:", id);
       return res.status(404).json({ error: "Район не найден" });
     }
     console.log("Район обновлен, ID:", id);
-    connection.release();
     res.json({ id: parseInt(id), name, parentRaionId: null, isRaion: true });
   } catch (error) {
     console.error("Ошибка обновления района:", error.message);
     res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
   }
 });
 
@@ -1614,11 +1676,12 @@ app.put("/api/subraions/:id", authenticate, async (req, res) => {
     return res.status(400).json({ error: "Поля name и parentRaionId обязательны" });
   }
 
+  let connection;
   try {
-    const connection = await pool.getConnection();
+    connection = await pool.getConnection();
     const [districtCheck] = await connection.execute("SELECT id FROM districts WHERE id = ?", [parentRaionId]);
     if (districtCheck.length === 0) {
-      connection.release();
+      console.error("Недействительный ID района:", parentRaionId);
       return res.status(400).json({ error: "Недействительный ID района" });
     }
 
@@ -1627,15 +1690,16 @@ app.put("/api/subraions/:id", authenticate, async (req, res) => {
       [name, parentRaionId, id]
     );
     if (result.affectedRows === 0) {
-      connection.release();
+      console.error("Микрорайон не найден по ID:", id);
       return res.status(404).json({ error: "Микрорайон не найден" });
     }
     console.log("Микрорайон обновлен, ID:", id);
-    connection.release();
     res.json({ id: parseInt(id), name, parentRaionId, isRaion: false });
   } catch (error) {
     console.error("Ошибка обновления микрорайона:", error.message);
     res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
   }
 });
 
@@ -1648,19 +1712,27 @@ app.delete("/api/raions/:id", authenticate, async (req, res) => {
 
   const { id } = req.params;
 
+  let connection;
   try {
-    const connection = await pool.getConnection();
+    connection = await pool.getConnection();
+    const [subdistrictCheck] = await connection.execute("SELECT id FROM subdistricts WHERE district_id = ?", [id]);
+    if (subdistrictCheck.length > 0) {
+      console.error("Нельзя удалить район, так как он содержит микрорайоны");
+      return res.status(400).json({ error: "Нельзя удалить район, так как он содержит микрорайоны" });
+    }
+
     const [result] = await connection.execute("DELETE FROM districts WHERE id = ?", [id]);
     if (result.affectedRows === 0) {
-      connection.release();
+      console.error("Район не найден по ID:", id);
       return res.status(404).json({ error: "Район не найден" });
     }
     console.log("Район удален, ID:", id);
-    connection.release();
     res.json({ message: "Район успешно удален" });
   } catch (error) {
     console.error("Ошибка удаления района:", error.message);
     res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
   }
 });
 
@@ -1673,108 +1745,397 @@ app.delete("/api/subraions/:id", authenticate, async (req, res) => {
 
   const { id } = req.params;
 
+  let connection;
   try {
-    const connection = await pool.getConnection();
+    connection = await pool.getConnection();
     const [result] = await connection.execute("DELETE FROM subdistricts WHERE id = ?", [id]);
     if (result.affectedRows === 0) {
-      connection.release();
+      console.error("Микрорайон не найден по ID:", id);
       return res.status(404).json({ error: "Микрорайон не найден" });
     }
     console.log("Микрорайон удален, ID:", id);
-    connection.release();
     res.json({ message: "Микрорайон успешно удален" });
   } catch (error) {
     console.error("Ошибка удаления микрорайона:", error.message);
     res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
   }
 });
 
-// Эндпоинт для перенаправления объектов недвижимости (защищено, только SUPER_ADMIN)
-app.patch("/api/properties/redirect", authenticate, async (req, res) => {
-  if (req.user.role !== "SUPER_ADMIN") {
-    console.error("Доступ запрещен: Требуется роль SUPER_ADMIN");
-    return res.status(403).json({ error: "Доступ запрещен: Требуется роль SUPER_ADMIN" });
+// Частичное обновление объекта недвижимости (защищено, SUPER_ADMIN или USER)
+app.patch("/api/properties/:id", authenticate, upload.fields([
+  { name: "photos", maxCount: 10 },
+  { name: "document", maxCount: 1 },
+]), async (req, res) => {
+  if (!["SUPER_ADMIN", "USER"].includes(req.user.role)) {
+    console.error("Доступ запрещен: Требуется роль SUPER_ADMIN или USER");
+    return res.status(403).json({ error: "Доступ запрещен: Требуется роль SUPER_ADMIN или USER" });
   }
 
-  const { propertyIds, curator_ids } = req.body;
+  const { id } = req.params;
+  const fields = req.body;
+  const photos = req.files["photos"] ? req.files["photos"].map((file) => ({
+    filename: `${Date.now()}-${Math.round(Math.random() * 1e9)}${path.extname(file.originalname)}`,
+    buffer: file.buffer,
+    mimetype: file.mimetype,
+  })) : [];
+  const document = req.files["document"] ? {
+    filename: `${Date.now()}-${Math.round(Math.random() * 1e9)}${path.extname(req.files["document"][0].originalname)}`,
+    buffer: req.files["document"][0].buffer,
+    mimetype: req.files["document"][0].mimetype,
+  } : null;
 
-  if (!Array.isArray(propertyIds) || !curator_ids) {
-    console.error("Ошибка: propertyIds должен быть массивом, curator_ids обязателен", { propertyIds, curator_ids });
-    return res.status(400).json({ error: "propertyIds должен быть массивом, curator_ids обязателен" });
-  }
+  console.log("Входные данные для частичного обновления объекта недвижимости:", {
+    id, fields, hasNewPhotos: photos.length > 0, hasDocument: !!document
+  });
 
-  let finalCuratorIds;
+  let connection;
   try {
-    const parsedCurators = JSON.parse(curator_ids);
-    if (!Array.isArray(parsedCurators)) {
-      throw new Error("curator_ids должен быть массивом");
-    }
-    finalCuratorIds = JSON.stringify(parsedCurators);
-  } catch (error) {
-    console.error("Ошибка парсинга curator_ids:", error.message);
-    return res.status(400).json({ error: "curator_ids должен быть корректным JSON-массивом" });
-  }
-
-  try {
-    const connection = await pool.getConnection();
-
-    const [existingProperties] = await connection.execute(
-      "SELECT id, curator_ids FROM properties WHERE id IN (?)",
-      [propertyIds]
-    );
-    if (existingProperties.length !== propertyIds.length) {
-      const existingIds = existingProperties.map(p => p.id);
-      const missingIds = propertyIds.filter(id => !existingIds.includes(id));
-      connection.release();
-      console.error("Некоторые объекты не найдены:", missingIds);
-      return res.status(404).json({ error: "Некоторые объекты недвижимости не найдены" });
+    connection = await pool.getConnection();
+    const [existingProperties] = await connection.execute("SELECT photos, document, curator_ids, created_at FROM properties WHERE id = ?", [id]);
+    if (existingProperties.length === 0) {
+      console.error("Объект недвижимости не найден по ID:", id);
+      return res.status(404).json({ error: "Объект недвижимости не найден" });
     }
 
-    const curatorIdArray = JSON.parse(finalCuratorIds);
-    const [curatorCheck] = await connection.execute(
-      "SELECT id FROM users1 WHERE id IN (?) AND role = 'USER'",
-      [curatorIdArray]
-    );
-    if (curatorCheck.length !== curatorIdArray.length) {
-      connection.release();
-      console.error("Один или несколько кураторов не найдены или не являются пользователями:", curator_ids);
-      return res.status(400).json({ error: "Один или несколько кураторов не найдены или не являются пользователями" });
+    const existingProperty = existingProperties[0];
+    if (req.user.role === "USER") {
+      let currentCuratorIds;
+      try {
+        currentCuratorIds = JSON.parse(existingProperty.curator_ids);
+        if (!Array.isArray(currentCuratorIds)) {
+          currentCuratorIds = [existingProperty.curator_ids];
+        }
+      } catch (error) {
+        currentCuratorIds = [existingProperty.curator_ids];
+      }
+      if (!currentCuratorIds.includes(req.user.id.toString())) {
+        console.error("Ошибка: Риелтор не является куратором этого объекта", { id, curator_ids: existingProperty.curator_ids, userId: req.user.id });
+        return res.status(403).json({ error: "У вас нет прав для редактирования этого объекта" });
+      }
     }
 
-    const [result] = await connection.execute(
-      "UPDATE properties SET curator_ids = ? WHERE id IN (?)",
-      [finalCuratorIds, propertyIds]
-    );
+    // Проверки валидности данных
+    if (fields.zhk_id) {
+      const [jkCheck] = await connection.execute("SELECT id FROM jk WHERE id = ?", [fields.zhk_id]);
+      if (jkCheck.length === 0) {
+        return res.status(400).json({ error: "Недействительный ID ЖК" });
+      }
+    }
 
+    if (fields.district_id) {
+      const [districtCheck] = await connection.execute("SELECT id FROM districts WHERE id = ?", [fields.district_id]);
+      if (districtCheck.length === 0) {
+        return res.status(400).json({ error: "Недействительный ID района" });
+      }
+    }
+
+    if (fields.subdistrict_id) {
+      const [subdistrictCheck] = await connection.execute("SELECT id FROM subdistricts WHERE id = ? AND district_id = ?", [fields.subdistrict_id, fields.district_id || existingProperty.district_id || null]);
+      if (subdistrictCheck.length === 0) {
+        return res.status(400).json({ error: "Недействительный ID микрорайона или микрорайон не принадлежит выбранному району" });
+      }
+    }
+
+    if (fields.curator_ids && req.user.role === "SUPER_ADMIN") {
+      try {
+        const parsedCurators = JSON.parse(fields.curator_ids);
+        if (!Array.isArray(parsedCurators)) {
+          console.error("Ошибка: curator_ids должен быть массивом", { curator_ids: fields.curator_ids });
+          return res.status(400).json({ error: "curator_ids должен быть корректным JSON-массивом" });
+        }
+        const [curatorCheck] = await connection.execute(
+          "SELECT id FROM users1 WHERE id IN (?) AND role = 'USER'",
+          [parsedCurators.map(id => id.toString())]
+        );
+        if (curatorCheck.length !== parsedCurators.length) {
+          console.error("Ошибка: Один или несколько кураторов не найдены или не являются пользователями", { curator_ids: fields.curator_ids });
+          return res.status(400).json({ error: "Один или несколько кураторов не найдены или не являются пользователями" });
+        }
+        fields.curator_ids = JSON.stringify(parsedCurators.map(id => id.toString()));
+      } catch (error) {
+        console.error("Ошибка парсинга curator_ids:", error.message, { curator_ids: fields.curator_ids });
+        return res.status(400).json({ error: "curator_ids должен быть корректным JSON-массивом" });
+      }
+    } else if (req.user.role === "USER") {
+      fields.curator_ids = JSON.stringify([req.user.id.toString()]);
+    }
+
+    // Проверка числовых полей
+    if (fields.price && isNaN(parseFloat(fields.price))) {
+      return res.status(400).json({ error: "Поле price должно быть числовым" });
+    }
+    if (fields.rukprice && isNaN(parseFloat(fields.rukprice))) {
+      return res.status(400).json({ error: "Поле rukprice должно быть числовым" });
+    }
+    if (fields.mkv && isNaN(parseFloat(fields.mkv))) {
+      return res.status(400).json({ error: "Поле mkv должно быть числовым" });
+    }
+    if (fields.etaj && isNaN(parseInt(fields.etaj))) {
+      return res.status(400).json({ error: "Поле etaj должно быть числовым" });
+    }
+    if (fields.etajnost && isNaN(parseInt(fields.etajnost))) {
+      return res.status(400).json({ error: "Поле etajnost должно быть числовым" });
+    }
+
+    let photoFiles = [];
+    if (existingProperty.photos) {
+      try {
+        photoFiles = JSON.parse(existingProperty.photos);
+        if (!Array.isArray(photoFiles)) {
+          console.warn(`Поле photos не является массивом для ID: ${id}, данные: ${existingProperty.photos}`);
+          photoFiles = existingProperty.photos.split(",").filter(p => p.trim());
+        }
+      } catch (error) {
+        console.warn(`Ошибка парсинга photos для ID: ${id}, Ошибка: ${error.message}, Данные: ${existingProperty.photos}`);
+        photoFiles = existingProperty.photos.split(",").filter(p => p.trim());
+      }
+    }
+
+    let existingPhotosList = [];
+    if (fields.existingPhotos) {
+      try {
+        existingPhotosList = JSON.parse(fields.existingPhotos);
+        if (!Array.isArray(existingPhotosList)) {
+          console.warn(`existingPhotos не является массивом для ID: ${id}, данные: ${fields.existingPhotos}`);
+          existingPhotosList = [];
+        }
+      } catch (error) {
+        console.warn(`Ошибка парсинга existingPhotos для ID: ${id}, Ошибка: ${error.message}, Данные: ${fields.existingPhotos}`);
+        existingPhotosList = [];
+      }
+    }
+
+    for (const photo of photos) {
+      const uploadParams = {
+        Bucket: bucketName,
+        Key: photo.filename,
+        Body: photo.buffer,
+        ContentType: photo.mimetype,
+      };
+      await s3Client.send(new PutObjectCommand(uploadParams));
+      console.log(`Новое изображение загружено в S3: ${photo.filename}`);
+    }
+
+    const photosToDelete = photoFiles.filter(p => !existingPhotosList.includes(p));
+    for (const oldPhoto of photosToDelete) {
+      try {
+        await s3Client.send(new DeleteObjectCommand({ Bucket: bucketName, Key: oldPhoto }));
+        console.log(`Старое изображение удалено из S3: ${oldPhoto}`);
+      } catch (error) {
+        console.warn(`Не удалось удалить старое изображение из S3: ${oldPhoto}, Ошибка: ${error.message}`);
+      }
+    }
+
+    let newPhotos = photoFiles;
+    if (fields.existingPhotos || photos.length > 0) {
+      newPhotos = [...existingPhotosList, ...photos.map(img => img.filename)];
+      fields.photos = newPhotos.length > 0 ? JSON.stringify(newPhotos) : null;
+    }
+
+    let newDocument = existingProperty.document;
+    if (document) {
+      const uploadParams = {
+        Bucket: bucketName,
+        Key: document.filename,
+        Body: document.buffer,
+        ContentType: document.mimetype,
+      };
+      await s3Client.send(new PutObjectCommand(uploadParams));
+      console.log(`Новый документ загружен в S3: ${document.filename}`);
+
+      if (existingProperty.document) {
+        try {
+          await s3Client.send(new DeleteObjectCommand({ Bucket: bucketName, Key: existingProperty.document }));
+          console.log(`Старый документ удален из S3: ${existingProperty.document}`);
+        } catch (error) {
+          console.warn(`Не удалось удалить старый документ из S3: ${existingProperty.document}, Ошибка: ${error.message}`);
+        }
+      }
+      newDocument = document.filename;
+      fields.document = newDocument;
+    }
+
+    const allowedFields = [
+      "type_id", "condition", "series", "zhk_id", "owner_name", "curator_ids", "price", "unit", "rukprice", 
+      "mkv", "room", "owner_phone", "district_id", "subdistrict_id", "address", "notes", "description", 
+      "status", "owner_id", "etaj", "etajnost", "photos", "document"
+    ];
+    const updateFields = {};
+    allowedFields.forEach(field => {
+      if (fields[field] !== undefined) {
+        updateFields[field] = fields[field];
+      }
+    });
+
+    if (Object.keys(updateFields).length === 0) {
+      console.error("Нет полей для обновления");
+      return res.status(400).json({ error: "Не предоставлены поля для обновления" });
+    }
+
+    const query = `UPDATE properties SET ${Object.keys(updateFields).map(field => `\`${field}\` = ?`).join(", ")} WHERE id = ?`;
+    const values = [...Object.values(updateFields), id];
+
+    const [result] = await connection.execute(query, values);
     if (result.affectedRows === 0) {
-      connection.release();
-      console.error("Не удалось обновить объекты недвижимости");
-      return res.status(500).json({ error: "Не удалось обновить объекты недвижимости" });
+      console.error("Объект недвижимости не найден по ID:", id);
+      return res.status(404).json({ error: "Объект недвижимости не найден" });
     }
 
-    // Fetch curator names for the response
-    const curatorNames = await getCuratorNames(finalCuratorIds, connection);
-    console.log("Объекты недвижимости перенаправлены, затронуто строк:", result.affectedRows, "Кураторы:", curatorNames);
+    const curatorNames = await getCuratorNames(updateFields.curator_ids || existingProperty.curator_ids, connection);
+    console.log("Объект недвижимости частично обновлен, ID:", id, "Кураторы:", curatorNames);
 
-    connection.release();
+    const [updatedProperty] = await connection.execute("SELECT * FROM properties WHERE id = ?", [id]);
+    const curatorIds = updatedProperty[0].curator_ids ? JSON.parse(updatedProperty[0].curator_ids) : [];
+
     res.json({
-      message: "Объекты недвижимости успешно перенаправлены",
-      affectedProperties: propertyIds,
-      curator_ids: finalCuratorIds,
+      id: parseInt(id),
+      ...updatedProperty[0],
+      curator_ids: curatorIds,
       curator_name: curatorNames.join(", "),
+      photos: newPhotos.map(img => `https://s3.twcstorage.ru/${bucketName}/${img}`),
+      document: newDocument ? `https://s3.twcstorage.ru/${bucketName}/${newDocument}` : null,
+      date: new Date(updatedProperty[0].created_at).toLocaleDateString("ru-RU"),
+      time: new Date(updatedProperty[0].created_at).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" }),
     });
   } catch (error) {
-    // Ensure the connection is released in case of an error
-    if (connection) {
-      connection.release();
-    }
-    console.error("Ошибка перенаправления объектов недвижимости:", error.message);
+    console.error("Ошибка частичного обновления объекта недвижимости:", error.message);
     res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
   }
 });
-   
+
+// Получение объекта недвижимости по ID (защищено)
+app.get("/api/properties/:id", authenticate, async (req, res) => {
+  const { id } = req.params;
+
+  let connection;
+  try {
+    connection = await pool.getConnection();
+    const [rows] = await connection.execute("SELECT * FROM properties WHERE id = ?", [id]);
+    if (rows.length === 0) {
+      console.error("Объект недвижимости не найден по ID:", id);
+      return res.status(404).json({ error: "Объект недвижимости не найден" });
+    }
+
+    const property = rows[0];
+    if (req.user.role === "USER") {
+      let currentCuratorIds;
+      try {
+        currentCuratorIds = JSON.parse(property.curator_ids);
+        if (!Array.isArray(currentCuratorIds)) {
+          currentCuratorIds = [property.curator_ids];
+        }
+      } catch (error) {
+        currentCuratorIds = [property.curator_ids];
+      }
+      if (!currentCuratorIds.includes(req.user.id.toString())) {
+        console.error("Ошибка: Риелтор не является куратором этого объекта", { id, curator_ids: property.curator_ids, userId: req.user.id });
+        return res.status(403).json({ error: "У вас нет прав для просмотра этого объекта" });
+      }
+    }
+
+    let parsedPhotos = [];
+    if (property.photos) {
+      try {
+        parsedPhotos = JSON.parse(property.photos);
+        if (!Array.isArray(parsedPhotos)) {
+          console.warn(`Поле photos не является массивом для ID: ${id}, данные: ${property.photos}`);
+          parsedPhotos = property.photos.split(",").filter(p => p.trim());
+        }
+      } catch (error) {
+        console.warn(`Ошибка парсинга photos для ID: ${id}, Ошибка: ${error.message}, Данные: ${property.photos}`);
+        parsedPhotos = property.photos.split(",").filter(p => p.trim());
+      }
+    }
+
+    let curatorNames = ['Не указан'];
+    let parsedCuratorIds = [];
+    try {
+      if (property.curator_ids) {
+        parsedCuratorIds = JSON.parse(property.curator_ids);
+        if (!Array.isArray(parsedCuratorIds)) {
+          console.warn(`curator_ids не является массивом для ID: ${id}, данные: ${property.curator_ids}`);
+          parsedCuratorIds = [property.curator_ids.toString()];
+        }
+        curatorNames = await getCuratorNames(property.curator_ids, connection);
+      }
+    } catch (error) {
+      console.warn(`Ошибка парсинга curator_ids для ID: ${id}, Ошибка: ${error.message}, Данные: ${property.curator_ids}`);
+      parsedCuratorIds = [property.curator_ids ? property.curator_ids.toString() : ''];
+    }
+
+    const response = {
+      ...property,
+      curator_ids: parsedCuratorIds,
+      curator_name: curatorNames.join(", "),
+      photos: parsedPhotos.map(img => `https://s3.twcstorage.ru/${bucketName}/${img}`),
+      document: property.document ? `https://s3.twcstorage.ru/${bucketName}/${property.document}` : null,
+      date: new Date(property.created_at).toLocaleDateString("ru-RU"),
+      time: new Date(property.created_at).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" }),
+    };
+
+    console.log("Объект недвижимости получен, ID:", id);
+    res.json(response);
+  } catch (error) {
+    console.error("Ошибка получения объекта недвижимости:", error.message);
+    res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
+// Редирект для внешних ссылок
+app.get("/api/properties/redirect", async (req, res) => {
+  const { id } = req.query;
+  if (!id) {
+    console.error("Ошибка: Параметр id обязателен");
+    return res.status(400).json({ error: "Параметр id обязателен" });
+  }
+
+  let connection;
+  try {
+    connection = await pool.getConnection();
+    const [rows] = await connection.execute("SELECT photos, address FROM properties WHERE id = ?", [id]);
+    if (rows.length === 0) {
+      console.error("Объект недвижимости не найден по ID:", id);
+      return res.status(404).json({ error: "Объект недвижимости не найден" });
+    }
+
+    const property = rows[0];
+    let parsedPhotos = [];
+    if (property.photos) {
+      try {
+        parsedPhotos = JSON.parse(property.photos);
+        if (!Array.isArray(parsedPhotos)) {
+          console.warn(`Поле photos не является массивом для ID: ${id}, данные: ${property.photos}`);
+          parsedPhotos = property.photos.split(",").filter(p => p.trim());
+        }
+      } catch (error) {
+        console.warn(`Ошибка парсинга photos для ID: ${id}, Ошибка: ${error.message}, Данные: ${property.photos}`);
+        parsedPhotos = property.photos.split(",").filter(p => p.trim());
+      }
+    }
+
+    const firstPhoto = parsedPhotos.length > 0 ? `https://s3.twcstorage.ru/${bucketName}/${parsedPhotos[0]}` : null;
+    const redirectUrl = `${publicDomain}/#/main/listing/${id}`;
+    
+    res.json({
+      url: redirectUrl,
+      image: firstPhoto,
+      address: property.address,
+    });
+  } catch (error) {
+    console.error("Ошибка редиректа:", error.message);
+    res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
 // Запуск сервера
 app.listen(port, () => {
   console.log(`Сервер запущен на порту ${port}`);
-  console.log(`Публичный домен: ${publicDomain}`);
 });
