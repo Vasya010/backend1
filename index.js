@@ -802,7 +802,7 @@ app.post("/api/properties", authenticate, upload.fields([
 ]), async (req, res) => {
   if (!["SUPER_ADMIN", "REALTOR"].includes(req.user.role)) {
     console.error("Доступ запрещен: Требуется роль SUPER_ADMIN или REALTOR");
-    return res.status(403).json({ error: "Доступ запрещен: Требуется роль SUPER_ADMIN или REALTOR" });
+    return res.status(403).json({ error: "Доступ запрещен: Требуется роль SUPER_ADMIN или Риелтор" });
   }
 
   const { type_id, condition, series, zhk_id, owner_name, curator_ids, price, unit, rukprice, mkv, room, owner_phone, district_id, subdistrict_id, address, notes, description, status, owner_id, etaj, etajnost } = req.body;
