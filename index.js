@@ -78,7 +78,6 @@ const authenticate = async (req, res, next) => {
     const decoded = jwt.verify(token, jwtSecret);
     console.log("Токен проверен:", decoded);
 
-    // Опциональная проверка токена в базе данных
     const connection = await pool.getConnection();
     const [users] = await connection.execute("SELECT id, role FROM users1 WHERE id = ?", [decoded.id]);
     connection.release();
@@ -95,6 +94,35 @@ const authenticate = async (req, res, next) => {
     res.status(401).json({ error: "Недействительный токен" });
   }
 };
+
+// Функция для получения имен кураторов по массиву curator_ids
+async function getCuratorNames(curatorIds, connection) {
+  if (!curatorIds) return ['Не указан'];
+  let curatorIdArray;
+  try {
+    curatorIdArray = JSON.parse(curatorIds);
+    if (!Array.isArray(curatorIdArray)) {
+      curatorIdArray = [curatorIds];
+    }
+  } catch (error) {
+    console.warn(`Ошибка парсинга curator_ids: ${curatorIds}, Ошибка: ${error.message}`);
+    curatorIdArray = [curatorIds];
+  }
+
+  if (curatorIdArray.length === 0) return ['Не указан'];
+
+  const [curators] = await connection.execute(
+    "SELECT id, CONCAT(first_name, ' ', last_name) AS curator_name FROM users1 WHERE id IN (?)",
+    [curatorIdArray]
+  );
+
+  const curatorMap = {};
+  curators.forEach(c => {
+    curatorMap[c.id] = c.curator_name;
+  });
+
+  return curatorIdArray.map(id => curatorMap[id] || id);
+}
 
 // Тестирование подключения к базе данных и настройка
 async function testDatabaseConnection() {
@@ -151,7 +179,7 @@ async function testDatabaseConnection() {
           rukprice VARCHAR(50) NOT NULL,
           mkv VARCHAR(12) NOT NULL,
           room VARCHAR(10) DEFAULT NULL,
-          phone VARCHAR(50) DEFAULT NULL,
+          owner_phone VARCHAR(50) DEFAULT NULL,
           district_id VARCHAR(255) DEFAULT NULL,
           subdistrict_id VARCHAR(255) DEFAULT NULL,
           address TEXT DEFAULT NULL,
@@ -593,12 +621,12 @@ app.post("/api/jk", authenticate, upload.single("photo"), async (req, res) => {
     return res.status(403).json({ error: "Доступ запрещен: Требуется роль SUPER_ADMIN" });
   }
 
-  const { name, address, developer, apartments, status } = req.body;
+  const { name, address, description } = req.body;
   const photo = req.file;
 
-  if (!name || !address || !developer || !apartments || !status) {
+  if (!name || !address) {
     console.error("Ошибка: Не все обязательные поля предоставлены");
-    return res.status(400).json({ error: "Все поля (name, address, developer, apartments, status) обязательны" });
+    return res.status(400).json({ error: "Поля name и address обязательны" });
   }
 
   const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
@@ -619,8 +647,8 @@ app.post("/api/jk", authenticate, upload.single("photo"), async (req, res) => {
     }
 
     const [result] = await connection.execute(
-      "INSERT INTO jk (name, address, developer, apartments, status, photo) VALUES (?, ?, ?, ?, ?, ?)",
-      [name, address, developer, apartments, status, photoFilename]
+      "INSERT INTO jk (name, address, description, photo) VALUES (?, ?, ?, ?)",
+      [name, address, description || null, photoFilename]
     );
 
     console.log("Создан новый ЖК, ID:", result.insertId);
@@ -630,9 +658,7 @@ app.post("/api/jk", authenticate, upload.single("photo"), async (req, res) => {
       id: result.insertId,
       name,
       address,
-      developer,
-      apartments,
-      status,
+      description,
       photo: photoFilename ? `https://s3.twcstorage.ru/${bucketName}/${photoFilename}` : null,
     };
 
@@ -651,12 +677,12 @@ app.put("/api/jk/:id", authenticate, upload.single("photo"), async (req, res) =>
   }
 
   const { id } = req.params;
-  const { name, address, developer, apartments, status } = req.body;
+  const { name, address, description } = req.body;
   const photo = req.file;
 
-  if (!name || !address || !developer || !apartments || !status) {
+  if (!name || !address) {
     console.error("Ошибка: Не все обязательные поля предоставлены");
-    return res.status(400).json({ error: "Все поля (name, address, developer, apartments, status) обязательны" });
+    return res.status(400).json({ error: "Поля name и address обязательны" });
   }
 
   const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
@@ -693,8 +719,8 @@ app.put("/api/jk/:id", authenticate, upload.single("photo"), async (req, res) =>
     }
 
     const [result] = await connection.execute(
-      "UPDATE jk SET name = ?, address = ?, developer = ?, apartments = ?, status = ?, photo = ? WHERE id = ?",
-      [name, address, developer, apartments, status, photoFilename, id]
+      "UPDATE jk SET name = ?, address = ?, description = ?, photo = ? WHERE id = ?",
+      [name, address, description || null, photoFilename, id]
     );
 
     if (result.affectedRows === 0) {
@@ -709,9 +735,7 @@ app.put("/api/jk/:id", authenticate, upload.single("photo"), async (req, res) =>
       id: parseInt(id),
       name,
       address,
-      developer,
-      apartments,
-      status,
+      description,
       photo: photoFilename ? `https://s3.twcstorage.ru/${bucketName}/${photoFilename}` : null,
     };
 
@@ -794,8 +818,7 @@ app.get("/api/subdistricts", authenticate, async (req, res) => {
   }
 });
 
-// Создание нового объекта недвижимости (защищено, SUPER_ADMIN или REALTOR)
-// Создание нового объекта недвижимости (защищено, SUPER_ADMIN или REALTOR)
+// Создание нового объекта недвижимости (защищено, SUPER_ADMIN или USER)
 app.post("/api/properties", authenticate, upload.fields([
   { name: "photos", maxCount: 10 },
   { name: "document", maxCount: 1 },
@@ -827,16 +850,28 @@ app.post("/api/properties", authenticate, upload.fields([
     return res.status(400).json({ error: "Поля price, rukprice, mkv, etaj, etajnost должны быть числовыми" });
   }
 
-  let finalCuratorIds = curator_ids || (req.user.role === "REALTOR" ? req.user.id.toString() : null);
-  if (req.user.role === "REALTOR" && curator_ids && curator_ids !== req.user.id.toString()) {
-    console.error("Ошибка: Риелтор может назначить только себя куратором", { curator_ids, userId: req.user.id });
-    return res.status(403).json({ error: "Риелтор может назначить только себя куратором" });
+  let finalCuratorIds = curator_ids;
+  if (req.user.role === "USER") {
+    finalCuratorIds = JSON.stringify([req.user.id.toString()]);
+    console.log("Риелтор: установка curator_ids на текущего пользователя", finalCuratorIds);
+  } else if (curator_ids) {
+    try {
+      const parsedCurators = JSON.parse(curator_ids);
+      if (!Array.isArray(parsedCurators)) {
+        throw new Error("curator_ids должен быть массивом");
+      }
+      finalCuratorIds = JSON.stringify(parsedCurators);
+    } catch (error) {
+      console.error("Ошибка парсинга curator_ids:", error.message);
+      return res.status(400).json({ error: "curator_ids должен быть корректным JSON-массивом" });
+    }
+  } else {
+    finalCuratorIds = null;
   }
 
   try {
     const connection = await pool.getConnection();
 
-    // Проверка zhk_id, если предоставлен
     if (zhk_id) {
       const [jkCheck] = await connection.execute("SELECT id FROM jk WHERE id = ?", [zhk_id]);
       if (jkCheck.length === 0) {
@@ -845,7 +880,6 @@ app.post("/api/properties", authenticate, upload.fields([
       }
     }
 
-    // Проверка district_id, если предоставлен
     if (district_id) {
       const [districtCheck] = await connection.execute("SELECT id FROM districts WHERE id = ?", [district_id]);
       if (districtCheck.length === 0) {
@@ -854,7 +888,6 @@ app.post("/api/properties", authenticate, upload.fields([
       }
     }
 
-    // Проверка subdistrict_id, если предоставлен
     if (subdistrict_id) {
       const [subdistrictCheck] = await connection.execute("SELECT id FROM subdistricts WHERE id = ? AND district_id = ?", [subdistrict_id, district_id || null]);
       if (subdistrictCheck.length === 0) {
@@ -905,7 +938,7 @@ app.post("/api/properties", authenticate, upload.fields([
         rukprice,
         mkv,
         room || null,
-        owner_phone || null, // Use owner_phone instead of phone
+        owner_phone || null,
         district_id || null,
         subdistrict_id || null,
         address,
@@ -921,7 +954,9 @@ app.post("/api/properties", authenticate, upload.fields([
         etajnost,
       ]
     );
-    console.log("Создан новый объект недвижимости, ID:", result.insertId);
+
+    const curatorNames = await getCuratorNames(finalCuratorIds, connection);
+    console.log("Создан новый объект недвижимости, ID:", result.insertId, "Кураторы:", curatorNames);
 
     const newProperty = {
       id: result.insertId,
@@ -932,12 +967,13 @@ app.post("/api/properties", authenticate, upload.fields([
       document_id: 0,
       owner_name,
       curator_ids: finalCuratorIds,
+      curator_name: curatorNames.join(", "),
       price,
       unit,
       rukprice,
       mkv,
       room,
-      owner_phone, // Use owner_phone directly
+      owner_phone,
       district_id,
       subdistrict_id,
       address,
@@ -961,7 +997,7 @@ app.post("/api/properties", authenticate, upload.fields([
   }
 });
 
-// Обновление объекта недвижимости (защищено, SUPER_ADMIN или REALTOR)
+// Обновление объекта недвижимости (защищено, SUPER_ADMIN или USER)
 app.put("/api/properties/:id", authenticate, upload.fields([
   { name: "photos", maxCount: 10 },
   { name: "document", maxCount: 1 },
@@ -1008,13 +1044,23 @@ app.put("/api/properties/:id", authenticate, upload.fields([
     }
 
     const existingProperty = existingProperties[0];
-    if (req.user.role === "REALTOR" && existingProperty.curator_ids !== req.user.id.toString()) {
-      connection.release();
-      console.error("Ошибка: Риелтор не является куратором этого объекта", { id, curator_ids: existingProperty.curator_ids, userId: req.user.id });
-      return res.status(403).json({ error: "У вас нет прав для редактирования этого объекта" });
+    if (req.user.role === "USER") {
+      let currentCuratorIds;
+      try {
+        currentCuratorIds = JSON.parse(existingProperty.curator_ids);
+        if (!Array.isArray(currentCuratorIds)) {
+          currentCuratorIds = [existingProperty.curator_ids];
+        }
+      } catch (error) {
+        currentCuratorIds = [existingProperty.curator_ids];
+      }
+      if (!currentCuratorIds.includes(req.user.id.toString())) {
+        connection.release();
+        console.error("Ошибка: Риелтор не является куратором этого объекта", { id, curator_ids: existingProperty.curator_ids, userId: req.user.id });
+        return res.status(403).json({ error: "У вас нет прав для редактирования этого объекта" });
+      }
     }
 
-    // Проверка zhk_id, если предоставлен
     if (zhk_id) {
       const [jkCheck] = await connection.execute("SELECT id FROM jk WHERE id = ?", [zhk_id]);
       if (jkCheck.length === 0) {
@@ -1023,7 +1069,6 @@ app.put("/api/properties/:id", authenticate, upload.fields([
       }
     }
 
-    // Проверка district_id, если предоставлен
     if (district_id) {
       const [districtCheck] = await connection.execute("SELECT id FROM districts WHERE id = ?", [district_id]);
       if (districtCheck.length === 0) {
@@ -1032,7 +1077,6 @@ app.put("/api/properties/:id", authenticate, upload.fields([
       }
     }
 
-    // Проверка subdistrict_id, если предоставлен
     if (subdistrict_id) {
       const [subdistrictCheck] = await connection.execute("SELECT id FROM subdistricts WHERE id = ? AND district_id = ?", [subdistrict_id, district_id || null]);
       if (subdistrictCheck.length === 0) {
@@ -1041,24 +1085,22 @@ app.put("/api/properties/:id", authenticate, upload.fields([
       }
     }
 
-    // Сохранение текущего curator_ids, если новое значение не предоставлено
-    let finalCuratorIds = curator_ids !== undefined ? curator_ids : existingProperty.curator_ids;
-    if (req.user.role === "REALTOR" && finalCuratorIds && finalCuratorIds !== req.user.id.toString()) {
-      console.error("Ошибка: Риелтор может назначить только себя куратором", { finalCuratorIds, userId: req.user.id });
-      return res.status(403).json({ error: "Риелтор может назначить только себя куратором" });
+    let finalCuratorIds = existingProperty.curator_ids;
+    if (req.user.role === "SUPER_ADMIN" && curator_ids) {
+      try {
+        const parsedCurators = JSON.parse(curator_ids);
+        if (!Array.isArray(parsedCurators)) {
+          throw new Error("curator_ids должен быть массивом");
+        }
+        finalCuratorIds = JSON.stringify(parsedCurators);
+      } catch (error) {
+        console.error("Ошибка парсинга curator_ids:", error.message);
+        return res.status(400).json({ error: "curator_ids должен быть корректным JSON-массивом" });
+      }
+    } else if (req.user.role === "USER") {
+      finalCuratorIds = JSON.stringify([req.user.id.toString()]);
     }
 
-    // Получение имени куратора
-    let curator_name = finalCuratorIds || 'Не указан';
-    if (finalCuratorIds) {
-      const [curator] = await connection.execute(
-        "SELECT CONCAT(first_name, ' ', last_name) AS curator_name FROM users1 WHERE id = ?",
-        [finalCuratorIds]
-      );
-      curator_name = curator.length > 0 ? curator[0].curator_name : finalCuratorIds;
-    }
-
-    // Обработка фотографий
     let photoFiles = [];
     if (existingProperty.photos) {
       try {
@@ -1073,7 +1115,6 @@ app.put("/api/properties/:id", authenticate, upload.fields([
       }
     }
 
-    // Парсинг existingPhotos из запроса
     let existingPhotosList = [];
     if (existingPhotos) {
       try {
@@ -1088,7 +1129,6 @@ app.put("/api/properties/:id", authenticate, upload.fields([
       }
     }
 
-    // Загрузка новых фотографий в S3
     for (const photo of photos) {
       const uploadParams = {
         Bucket: bucketName,
@@ -1100,7 +1140,6 @@ app.put("/api/properties/:id", authenticate, upload.fields([
       console.log(`Новое изображение загружено в S3: ${photo.filename}`);
     }
 
-    // Удаление фотографий, которых нет в existingPhotosList
     const photosToDelete = photoFiles.filter(p => !existingPhotosList.includes(p));
     for (const oldPhoto of photosToDelete) {
       try {
@@ -1111,11 +1150,9 @@ app.put("/api/properties/:id", authenticate, upload.fields([
       }
     }
 
-    // Объединение существующих и новых фотографий
     const newPhotos = [...existingPhotosList, ...photos.map(img => img.filename)];
     const photosJson = newPhotos.length > 0 ? JSON.stringify(newPhotos) : null;
 
-    // Обработка обновления документа
     let newDocument = existingProperty.document;
     if (document) {
       const uploadParams = {
@@ -1156,7 +1193,7 @@ app.put("/api/properties/:id", authenticate, upload.fields([
         rukprice,
         mkv,
         room || null,
-        owner_phone || null, // Use owner_phone instead of phone
+        owner_phone || null,
         district_id || null,
         subdistrict_id || null,
         address,
@@ -1176,7 +1213,9 @@ app.put("/api/properties/:id", authenticate, upload.fields([
       connection.release();
       return res.status(404).json({ error: "Объект недвижимости не найден" });
     }
-    console.log("Объект недвижимости обновлен, ID:", id, "Куратор:", finalCuratorIds);
+
+    const curatorNames = await getCuratorNames(finalCuratorIds, connection);
+    console.log("Объект недвижимости обновлен, ID:", id, "Кураторы:", curatorNames);
 
     const updatedProperty = {
       id: parseInt(id),
@@ -1187,13 +1226,13 @@ app.put("/api/properties/:id", authenticate, upload.fields([
       document_id: 0,
       owner_name,
       curator_ids: finalCuratorIds,
-      curator_name,
+      curator_name: curatorNames.join(", "),
       price,
       unit,
       rukprice,
       mkv,
       room,
-      owner_phone, // Use owner_phone directly
+      owner_phone,
       district_id,
       subdistrict_id,
       address,
@@ -1217,8 +1256,7 @@ app.put("/api/properties/:id", authenticate, upload.fields([
   }
 });
 
-// Удаление объекта недвижимости (защищено, SUPER_ADMIN или REALTOR)
-// Удаление объекта недвижимости (защищено, SUPER_ADMIN или REALTOR)
+// Удаление объекта недвижимости (защищено, SUPER_ADMIN или USER)
 app.delete("/api/properties/:id", authenticate, async (req, res) => {
   if (!["SUPER_ADMIN", "USER"].includes(req.user.role)) {
     console.error("Доступ запрещен: Требуется роль SUPER_ADMIN или USER");
@@ -1237,10 +1275,21 @@ app.delete("/api/properties/:id", authenticate, async (req, res) => {
     }
 
     const existingProperty = properties[0];
-    if (req.user.role === "REALTOR" && existingProperty.curator_ids !== req.user.id.toString()) {
-      connection.release();
-      console.error("Ошибка: Риелтор не является куратором этого объекта", { id, curator_ids: existingProperty.curator_ids, userId: req.user.id });
-      return res.status(403).json({ error: "У вас нет прав для удаления этого объекта" });
+    if (req.user.role === "USER") {
+      let currentCuratorIds;
+      try {
+        currentCuratorIds = JSON.parse(existingProperty.curator_ids);
+        if (!Array.isArray(currentCuratorIds)) {
+          currentCuratorIds = [existingProperty.curator_ids];
+        }
+      } catch (error) {
+        currentCuratorIds = [existingProperty.curator_ids];
+      }
+      if (!currentCuratorIds.includes(req.user.id.toString())) {
+        connection.release();
+        console.error("Ошибка: Риелтор не является куратором этого объекта", { id, curator_ids: existingProperty.curator_ids, userId: req.user.id });
+        return res.status(403).json({ error: "У вас нет прав для удаления этого объекта" });
+      }
     }
 
     let photoFiles = [];
@@ -1289,18 +1338,15 @@ app.delete("/api/properties/:id", authenticate, async (req, res) => {
 });
 
 // Получение всех объектов недвижимости (защищено)
-// Получение всех объектов недвижимости (защищено)
 app.get("/api/properties", authenticate, async (req, res) => {
   try {
     const connection = await pool.getConnection();
     const [rows] = await connection.execute(
-      `SELECT p.*, CONCAT(u.first_name, ' ', u.last_name) AS curator_name
-       FROM properties p
-       LEFT JOIN users1 u ON p.curator_ids = u.id`
+      `SELECT p.* FROM properties p`
     );
     console.log("Объекты недвижимости получены из базы данных:", rows.length);
 
-    const properties = rows.map((row) => {
+    const properties = await Promise.all(rows.map(async (row) => {
       let parsedPhotos = [];
       if (row.photos) {
         try {
@@ -1315,16 +1361,18 @@ app.get("/api/properties", authenticate, async (req, res) => {
         }
       }
 
+      const curatorNames = await getCuratorNames(row.curator_ids, connection);
+
       return {
         ...row,
-        owner_phone: row.phone, // Map 'phone' to 'owner_phone' for frontend consistency
+        owner_phone: row.owner_phone,
         photos: parsedPhotos.map((img) => `https://s3.twcstorage.ru/${bucketName}/${img}`),
         document: row.document ? `https://s3.twcstorage.ru/${bucketName}/${row.document}` : null,
         date: new Date(row.created_at).toLocaleDateString("ru-RU"),
         time: new Date(row.created_at).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" }),
-        curator_name: row.curator_name || row.curator_ids || 'Не указан',
+        curator_name: curatorNames.join(", "),
       };
-    });
+    }));
 
     connection.release();
     res.json(properties);
@@ -1366,13 +1414,9 @@ app.get("/api/raions", authenticate, async (req, res) => {
   try {
     const connection = await pool.getConnection();
     
-    // Получение районов
     const [districts] = await connection.execute("SELECT id, name, NULL AS parentRaionId FROM districts");
-    
-    // Получение микрорайонов
     const [subdistricts] = await connection.execute("SELECT id, name, district_id AS parentRaionId FROM subdistricts");
     
-    // Объединяем районы и микрорайоны
     const raions = [
       ...districts.map(row => ({ id: row.id, name: row.name, parentRaionId: null, isRaion: true })),
       ...subdistricts.map(row => ({ id: row.id, name: row.name, parentRaionId: row.parentRaionId, isRaion: false })),
@@ -1430,7 +1474,6 @@ app.post("/api/subraions", authenticate, async (req, res) => {
 
   try {
     const connection = await pool.getConnection();
-    // Проверка существования района
     const [districtCheck] = await connection.execute("SELECT id FROM districts WHERE id = ?", [parentRaionId]);
     if (districtCheck.length === 0) {
       connection.release();
@@ -1499,7 +1542,6 @@ app.put("/api/subraions/:id", authenticate, async (req, res) => {
 
   try {
     const connection = await pool.getConnection();
-    // Проверка существования района
     const [districtCheck] = await connection.execute("SELECT id FROM districts WHERE id = ?", [parentRaionId]);
     if (districtCheck.length === 0) {
       connection.release();
@@ -1574,7 +1616,6 @@ app.delete("/api/subraions/:id", authenticate, async (req, res) => {
 });
 
 // Эндпоинт для перенаправления объектов недвижимости (защищено, только SUPER_ADMIN)
-// Эндпоинт для перенаправления объектов недвижимости (защищено, только SUPER_ADMIN)
 app.patch("/api/properties/redirect", authenticate, async (req, res) => {
   if (req.user.role !== "SUPER_ADMIN") {
     console.error("Доступ запрещен: Требуется роль SUPER_ADMIN");
@@ -1588,10 +1629,21 @@ app.patch("/api/properties/redirect", authenticate, async (req, res) => {
     return res.status(400).json({ error: "propertyIds должен быть массивом, curator_ids обязателен" });
   }
 
+  let finalCuratorIds;
+  try {
+    const parsedCurators = JSON.parse(curator_ids);
+    if (!Array.isArray(parsedCurators)) {
+      throw new Error("curator_ids должен быть массивом");
+    }
+    finalCuratorIds = JSON.stringify(parsedCurators);
+  } catch (error) {
+    console.error("Ошибка парсинга curator_ids:", error.message);
+    return res.status(400).json({ error: "curator_ids должен быть корректным JSON-массивом" });
+  }
+
   try {
     const connection = await pool.getConnection();
 
-    // Проверка существования всех объектов недвижимости
     const [existingProperties] = await connection.execute(
       "SELECT id, curator_ids FROM properties WHERE id IN (?)",
       [propertyIds]
@@ -1604,21 +1656,20 @@ app.patch("/api/properties/redirect", authenticate, async (req, res) => {
       return res.status(404).json({ error: "Некоторые объекты недвижимости не найдены" });
     }
 
-    // Проверка существования куратора
+    const curatorIdArray = JSON.parse(finalCuratorIds);
     const [curatorCheck] = await connection.execute(
-      "SELECT id FROM users1 WHERE id = ? AND role = 'USER'",
-      [curator_ids]
+      "SELECT id FROM users1 WHERE id IN (?) AND role = 'USER'",
+      [curatorIdArray]
     );
-    if (curatorCheck.length === 0) {
+    if (curatorCheck.length !== curatorIdArray.length) {
       connection.release();
-      console.error("Куратор не найден или не является пользователем:", curator_ids);
-      return res.status(400).json({ error: "Куратор не найден или не является пользователем" });
+      console.error("Один или несколько кураторов не найдены или не являются пользователями:", curator_ids);
+      return res.status(400).json({ error: "Один или несколько кураторов не найдены или не являются пользователями" });
     }
 
-    // Обновление curator_ids для всех указанных объектов
     const [result] = await connection.execute(
       "UPDATE properties SET curator_ids = ? WHERE id IN (?)",
-      [curator_ids, propertyIds]
+      [finalCuratorIds, propertyIds]
     );
 
     if (result.affectedRows === 0) {
@@ -1627,14 +1678,27 @@ app.patch("/api/properties/redirect", authenticate, async (req, res) => {
       return res.status(500).json({ error: "Не удалось обновить объекты недвижимости" });
     }
 
-    console.log(`Объекты недвижимости перенаправлены куратору ID ${curator_ids}:`, propertyIds);
+    // Fetch curator names for the response
+    const curatorNames = await getCuratorNames(finalCuratorIds, connection);
+    console.log("Объекты недвижимости перенаправлены, затронуто строк:", result.affectedRows, "Кураторы:", curatorNames);
+
     connection.release();
-    res.json({ message: "Объекты недвижимости успешно перенаправлены" });
+    res.json({
+      message: "Объекты недвижимости успешно перенаправлены",
+      affectedProperties: propertyIds,
+      curator_ids: finalCuratorIds,
+      curator_name: curatorNames.join(", "),
+    });
   } catch (error) {
+    // Ensure the connection is released in case of an error
+    if (connection) {
+      connection.release();
+    }
     console.error("Ошибка перенаправления объектов недвижимости:", error.message);
     res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
   }
 });
+   
 // Запуск сервера
 app.listen(port, () => {
   console.log(`Сервер запущен на порту ${port}`);
