@@ -13,7 +13,7 @@ const port = process.env.PORT || 5000;
 const publicDomain = process.env.PUBLIC_DOMAIN || "https://vasya010-backend1-10db.twc1.net";
 const jwtSecret = process.env.JWT_SECRET || "your_jwt_secret_123";
 
-// S3 Configuration
+// S3 Configuration22
 const s3Client = new S3Client({
   region: process.env.S3_REGION || "ru-1",
   endpoint: process.env.S3_ENDPOINT || "https://s3.twcstorage.ru",
