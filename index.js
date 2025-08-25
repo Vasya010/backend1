@@ -79,7 +79,10 @@ const authenticate = async (req, res, next) => {
     console.log("Token verified:", decoded);
 
     const connection = await pool.getConnection();
-    const [users] = await connection.execute("SELECT id, role FROM users1 WHERE id = ? AND token = ?", [decoded.id, token]);
+    const [users] = await connection.execute(
+      "SELECT id, role FROM users1 WHERE id = ? AND token = ?",
+      [decoded.id, token]
+    );
     connection.release();
 
     if (users.length === 0) {
@@ -94,6 +97,7 @@ const authenticate = async (req, res, next) => {
     res.status(401).json({ error: "Invalid token" });
   }
 };
+
 
 // Database Connection Test and Setup
 async function testDatabaseConnection() {
@@ -115,14 +119,17 @@ async function testDatabaseConnection() {
           phone VARCHAR(255) NOT NULL,
           profile_picture VARCHAR(255) DEFAULT NULL,
           password VARCHAR(255) NOT NULL,
-          token TEXT DEFAULT NULL
+          token TEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci DEFAULT NULL
         ) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci
       `);
     } else {
       const [columns] = await connection.execute("SHOW COLUMNS FROM users1 LIKE 'token'");
       if (columns.length === 0) {
         console.log("Column token does not exist, adding...");
-        await connection.execute("ALTER TABLE users1 ADD token TEXT DEFAULT NULL");
+        await connection.execute("ALTER TABLE users1 ADD token TEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci DEFAULT NULL");
+      } else if (columns[0].Type !== 'text') {
+        console.log("Updating token column charset to utf8mb4...");
+        await connection.execute("ALTER TABLE users1 MODIFY token TEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci DEFAULT NULL");
       }
       const [indexes] = await connection.execute("SHOW INDEX FROM users1 WHERE Column_name = 'email' AND Non_unique = 0");
       if (indexes.length === 0) {
@@ -1250,7 +1257,7 @@ app.patch("/api/properties/redirect", authenticate, async (req, res) => {
     const connection = await pool.getConnection();
 
     // Validate curator_id
-    const [curatorCheck] = await connection.execute("SELECT id FROM users1 WHERE id = ?", [curator_id]);
+    const [curatorCheck] = await connection.execute("SELECT id, first_name, last_name FROM users1 WHERE id = ?", [curator_id]);
     if (curatorCheck.length === 0) {
       connection.release();
       return res.status(400).json({ error: "Invalid curator ID" });
