@@ -13,6 +13,9 @@ const port = process.env.PORT || 5000;
 const publicDomain = process.env.PUBLIC_DOMAIN || "https://vasya010-backend1-10db.twc1.net";
 const jwtSecret = process.env.JWT_SECRET || "your_jwt_secret_123";
 
+// Valid roles for validation
+const VALID_ROLES = ['USER', 'ADMIN', 'SUPER_ADMIN', 'REALTOR'];
+
 // S3 Configuration
 const s3Client = new S3Client({
   region: process.env.S3_REGION || "ru-1",
@@ -248,22 +251,21 @@ app.post("/api/admin/login", async (req, res) => {
     return res.status(400).json({ error: "Email and password are required" });
   }
 
+  let connection;
   try {
-    const connection = await pool.getConnection();
+    connection = await pool.getConnection();
     const [rows] = await connection.execute(
       "SELECT id, first_name, last_name, email, phone, role, password, profile_picture AS photoUrl FROM users1 WHERE email = ?",
       [email]
     );
 
     if (rows.length === 0) {
-      connection.release();
       return res.status(401).json({ error: "Invalid email or user not found" });
     }
 
     const user = rows[0];
     const isPasswordValid = await bcrypt.compare(password, user.password);
     if (!isPasswordValid) {
-      connection.release();
       return res.status(401).json({ error: "Invalid password" });
     }
 
@@ -282,24 +284,27 @@ app.post("/api/admin/login", async (req, res) => {
       token,
     };
 
-    connection.release();
     res.json({ message: "Authorization successful", user: userResponse, token });
   } catch (error) {
     console.error("Login error:", error.message);
     res.status(500).json({ error: `Internal server error: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
   }
 });
 
 // Logout Endpoint
 app.post("/api/logout", authenticate, async (req, res) => {
+  let connection;
   try {
-    const connection = await pool.getConnection();
+    connection = await pool.getConnection();
     await connection.execute("UPDATE users1 SET token = NULL WHERE id = ?", [req.user.id]);
-    connection.release();
     res.json({ message: "Logout successful" });
   } catch (error) {
     console.error("Logout error:", error.message);
     res.status(500).json({ error: `Internal server error: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
   }
 });
 
@@ -309,12 +314,12 @@ app.get("/api/users", authenticate, async (req, res) => {
     return res.status(403).json({ error: "Access denied: SUPER_ADMIN role required" });
   }
 
+  let connection;
   try {
-    const connection = await pool.getConnection();
+    connection = await pool.getConnection();
     const [rows] = await connection.execute(
       "SELECT id, first_name, last_name, email, phone, role, profile_picture AS photoUrl FROM users1"
     );
-    connection.release();
 
     res.json(
       rows.map((user) => ({
@@ -326,6 +331,8 @@ app.get("/api/users", authenticate, async (req, res) => {
   } catch (error) {
     console.error("Error retrieving users:", error.message);
     res.status(500).json({ error: `Internal server error: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
   }
 });
 
@@ -342,15 +349,19 @@ app.post("/api/users", authenticate, upload.single("photo"), async (req, res) =>
     return res.status(400).json({ error: "All fields (email, name, phone, role, password) are required" });
   }
 
+  if (!VALID_ROLES.includes(role)) {
+    return res.status(400).json({ error: `Invalid role. Must be one of: ${VALID_ROLES.join(', ')}` });
+  }
+
   const [first_name, last_name = ""] = name.split(" ");
   const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
   const profile_picture = photo ? `${uniqueSuffix}${path.extname(photo.originalname)}` : null;
 
+  let connection;
   try {
-    const connection = await pool.getConnection();
+    connection = await pool.getConnection();
     const [existingUser] = await connection.execute("SELECT id FROM users1 WHERE email = ?", [email]);
     if (existingUser.length > 0) {
-      connection.release();
       return res.status(400).json({ error: "User with this email already exists" });
     }
 
@@ -385,11 +396,12 @@ app.post("/api/users", authenticate, upload.single("photo"), async (req, res) =>
       token,
     };
 
-    connection.release();
     res.json(newUser);
   } catch (error) {
     console.error("Error creating user:", error.message);
     res.status(500).json({ error: `Internal server error: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
   }
 });
 
@@ -407,21 +419,24 @@ app.put("/api/users/:id", authenticate, upload.single("photo"), async (req, res)
     return res.status(400).json({ error: "All fields (email, name, phone, role) are required" });
   }
 
+  if (!VALID_ROLES.includes(role)) {
+    return res.status(400).json({ error: `Invalid role. Must be one of: ${VALID_ROLES.join(', ')}` });
+  }
+
   const [first_name, last_name = ""] = name.split(" ");
   const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
   let profile_picture = null;
 
+  let connection;
   try {
-    const connection = await pool.getConnection();
+    connection = await pool.getConnection();
     const [existingUsers] = await connection.execute("SELECT profile_picture FROM users1 WHERE id = ?", [id]);
     if (existingUsers.length === 0) {
-      connection.release();
       return res.status(404).json({ error: "User not found" });
     }
 
     const [emailCheck] = await connection.execute("SELECT id FROM users1 WHERE email = ? AND id != ?", [email, id]);
     if (emailCheck.length > 0) {
-      connection.release();
       return res.status(400).json({ error: "User with this email already exists" });
     }
 
@@ -436,7 +451,11 @@ app.put("/api/users/:id", authenticate, upload.single("photo"), async (req, res)
       }));
 
       if (existingUsers[0].profile_picture) {
-        await s3Client.send(new DeleteObjectCommand({ Bucket: bucketName, Key: existingUsers[0].profile_picture }));
+        try {
+          await s3Client.send(new DeleteObjectCommand({ Bucket: bucketName, Key: existingUsers[0].profile_picture }));
+        } catch (error) {
+          console.warn(`Failed to delete old profile picture from S3: ${existingUsers[0].profile_picture}`);
+        }
       }
     }
 
@@ -456,11 +475,12 @@ app.put("/api/users/:id", authenticate, upload.single("photo"), async (req, res)
       name: `${first_name} ${last_name}`.trim(),
     };
 
-    connection.release();
     res.json(updatedUser);
   } catch (error) {
     console.error("Error updating user:", error.message);
     res.status(500).json({ error: `Internal server error: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
   }
 });
 
@@ -472,50 +492,59 @@ app.delete("/api/users/:id", authenticate, async (req, res) => {
 
   const { id } = req.params;
 
+  let connection;
   try {
-    const connection = await pool.getConnection();
+    connection = await pool.getConnection();
     const [users] = await connection.execute("SELECT profile_picture FROM users1 WHERE id = ?", [id]);
     if (users.length === 0) {
-      connection.release();
       return res.status(404).json({ error: "User not found" });
     }
 
     if (users[0].profile_picture) {
-      await s3Client.send(new DeleteObjectCommand({ Bucket: bucketName, Key: users[0].profile_picture }));
+      try {
+        await s3Client.send(new DeleteObjectCommand({ Bucket: bucketName, Key: users[0].profile_picture }));
+      } catch (error) {
+        console.warn(`Failed to delete profile picture from S3: ${users[0].profile_picture}`);
+      }
     }
 
     await connection.execute("DELETE FROM users1 WHERE id = ?", [id]);
-    connection.release();
     res.json({ message: "User successfully deleted" });
   } catch (error) {
     console.error("Error deleting user:", error.message);
     res.status(500).json({ error: `Internal server error: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
   }
 });
 
 // Get All JK (Protected)
 app.get("/api/jk", authenticate, async (req, res) => {
+  let connection;
   try {
-    const connection = await pool.getConnection();
+    connection = await pool.getConnection();
     const [rows] = await connection.execute("SELECT id, name FROM jk");
-    connection.release();
     res.json(rows);
   } catch (error) {
     console.error("Error retrieving JK:", error.message);
     res.status(500).json({ error: `Internal server error: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
   }
 });
 
 // Get All Districts (Protected)
 app.get("/api/districts", authenticate, async (req, res) => {
+  let connection;
   try {
-    const connection = await pool.getConnection();
+    connection = await pool.getConnection();
     const [rows] = await connection.execute("SELECT id, name FROM districts");
-    connection.release();
     res.json(rows);
   } catch (error) {
     console.error("Error retrieving districts:", error.message);
     res.status(500).json({ error: `Internal server error: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
   }
 });
 
@@ -526,17 +555,19 @@ app.get("/api/subdistricts", authenticate, async (req, res) => {
     return res.status(400).json({ error: "district_id is required" });
   }
 
+  let connection;
   try {
-    const connection = await pool.getConnection();
+    connection = await pool.getConnection();
     const [rows] = await connection.execute(
       "SELECT id, name FROM subdistricts WHERE district_id = ?",
       [district_id]
     );
-    connection.release();
     res.json(rows);
   } catch (error) {
     console.error("Error retrieving subdistricts:", error.message);
     res.status(500).json({ error: `Internal server error: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
   }
 });
 
@@ -549,18 +580,43 @@ app.post("/api/properties", authenticate, upload.fields([
     return res.status(403).json({ error: "Access denied: SUPER_ADMIN or REALTOR role required" });
   }
 
-  const { type_id, condition, series, zhk_id, owner_name, curator_id, price, unit, rukprice, mkv, room, phone, district_id, subdistrict_id, address, notes, description, status, owner_id, etaj, etajnost } = req.body;
+  const {
+    type_id,
+    condition,
+    series,
+    zhk_id,
+    owner_name,
+    curator_id,
+    price,
+    unit,
+    rukprice,
+    mkv,
+    room,
+    phone,
+    district_id,
+    subdistrict_id,
+    address,
+    notes,
+    description,
+    status,
+    owner_id,
+    etaj,
+    etajnost,
+  } = req.body;
+
   const photos = req.files["photos"] ? req.files["photos"].map(file => ({
     filename: `${Date.now()}-${Math.round(Math.random() * 1e9)}${path.extname(file.originalname)}`,
     buffer: file.buffer,
     mimetype: file.mimetype,
   })) : [];
+
   const document = req.files["document"] ? {
     filename: `${Date.now()}-${Math.round(Math.random() * 1e9)}${path.extname(req.files["document"][0].originalname)}`,
     buffer: req.files["document"][0].buffer,
     mimetype: req.files["document"][0].mimetype,
   } : null;
 
+  // Validate required fields
   if (!type_id || !price || !rukprice || !mkv || !address || !etaj || !etajnost) {
     return res.status(400).json({ error: "All required fields (type_id, price, rukprice, mkv, address, etaj, etajnost) must be provided" });
   }
@@ -569,19 +625,29 @@ app.post("/api/properties", authenticate, upload.fields([
     return res.status(400).json({ error: "Fields price, rukprice, mkv, etaj, etajnost must be numeric" });
   }
 
-  let finalCuratorId = curator_id || (req.user.role === "REALTOR" ? req.user.id : null);
-  if (req.user.role === "REALTOR" && curator_id && curator_id != req.user.id) {
+  // Validate curator_id
+  let finalCuratorId;
+  if (curator_id) {
+    if (isNaN(parseInt(curator_id))) {
+      return res.status(400).json({ error: "curator_id must be a valid number" });
+    }
+    finalCuratorId = parseInt(curator_id);
+  } else {
+    finalCuratorId = req.user.role === "REALTOR" ? req.user.id : null;
+  }
+
+  if (req.user.role === "REALTOR" && finalCuratorId && finalCuratorId !== req.user.id) {
     return res.status(403).json({ error: "Realtor can only assign themselves as curator" });
   }
 
+  let connection;
   try {
-    const connection = await pool.getConnection();
+    connection = await pool.getConnection();
 
     // Validate zhk_id
     if (zhk_id) {
       const [jkCheck] = await connection.execute("SELECT id FROM jk WHERE id = ?", [zhk_id]);
       if (jkCheck.length === 0) {
-        connection.release();
         return res.status(400).json({ error: "Invalid JK ID" });
       }
     }
@@ -590,16 +656,17 @@ app.post("/api/properties", authenticate, upload.fields([
     if (district_id) {
       const [districtCheck] = await connection.execute("SELECT id FROM districts WHERE id = ?", [district_id]);
       if (districtCheck.length === 0) {
-        connection.release();
         return res.status(400).json({ error: "Invalid district ID" });
       }
     }
 
     // Validate subdistrict_id
     if (subdistrict_id) {
-      const [subdistrictCheck] = await connection.execute("SELECT id FROM subdistricts WHERE id = ? AND district_id = ?", [subdistrict_id, district_id || null]);
+      const [subdistrictCheck] = await connection.execute(
+        "SELECT id FROM subdistricts WHERE id = ? AND district_id = ?",
+        [subdistrict_id, district_id || null]
+      );
       if (subdistrictCheck.length === 0) {
-        connection.release();
         return res.status(400).json({ error: "Invalid subdistrict ID or subdistrict does not belong to the selected district" });
       }
     }
@@ -612,7 +679,6 @@ app.post("/api/properties", authenticate, upload.fields([
         [finalCuratorId]
       );
       if (curatorCheck.length === 0) {
-        connection.release();
         return res.status(400).json({ error: "Invalid curator ID" });
       }
       curatorName = curatorCheck[0].curator_name;
@@ -620,24 +686,34 @@ app.post("/api/properties", authenticate, upload.fields([
 
     // Upload files to S3
     for (const photo of photos) {
-      await s3Client.send(new PutObjectCommand({
-        Bucket: bucketName,
-        Key: photo.filename,
-        Body: photo.buffer,
-        ContentType: photo.mimetype,
-      }));
+      try {
+        await s3Client.send(new PutObjectCommand({
+          Bucket: bucketName,
+          Key: photo.filename,
+          Body: photo.buffer,
+          ContentType: photo.mimetype,
+        }));
+      } catch (error) {
+        console.error(`Failed to upload photo to S3: ${photo.filename}`, error.message);
+        throw new Error(`Failed to upload photo: ${photo.filename}`);
+      }
     }
 
     if (document) {
-      await s3Client.send(new PutObjectCommand({
-        Bucket: bucketName,
-        Key: document.filename,
-        Body: document.buffer,
-        ContentType: document.mimetype,
-      }));
+      try {
+        await s3Client.send(new PutObjectCommand({
+          Bucket: bucketName,
+          Key: document.filename,
+          Body: document.buffer,
+          ContentType: document.mimetype,
+        }));
+      } catch (error) {
+        console.error(`Failed to upload document to S3: ${document.filename}`, error.message);
+        throw new Error(`Failed to upload document: ${document.filename}`);
+      }
     }
 
-    const photosJson = JSON.stringify(photos.map(img => img.filename));
+    const photosJson = photos.length > 0 ? JSON.stringify(photos.map(img => img.filename)) : null;
     const [result] = await connection.execute(
       `INSERT INTO properties (
         type_id, \`condition\`, series, zhk_id, document_id, owner_name, curator_id, price, unit, rukprice, mkv, room, phone, 
@@ -702,11 +778,12 @@ app.post("/api/properties", authenticate, upload.fields([
       time: new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" }),
     };
 
-    connection.release();
     res.json(newProperty);
   } catch (error) {
     console.error("Error creating property:", error.message);
     res.status(500).json({ error: `Internal server error: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
   }
 });
 
@@ -720,18 +797,44 @@ app.put("/api/properties/:id", authenticate, upload.fields([
   }
 
   const { id } = req.params;
-  const { type_id, condition, series, zhk_id, owner_name, curator_id, price, unit, rukprice, mkv, room, phone, district_id, subdistrict_id, address, notes, description, status, owner_id, etaj, etajnost, existingPhotos } = req.body;
+  const {
+    type_id,
+    condition,
+    series,
+    zhk_id,
+    owner_name,
+    curator_id,
+    price,
+    unit,
+    rukprice,
+    mkv,
+    room,
+    phone,
+    district_id,
+    subdistrict_id,
+    address,
+    notes,
+    description,
+    status,
+    owner_id,
+    etaj,
+    etajnost,
+    existingPhotos,
+  } = req.body;
+
   const photos = req.files["photos"] ? req.files["photos"].map(file => ({
     filename: `${Date.now()}-${Math.round(Math.random() * 1e9)}${path.extname(file.originalname)}`,
     buffer: file.buffer,
     mimetype: file.mimetype,
   })) : [];
+
   const document = req.files["document"] ? {
     filename: `${Date.now()}-${Math.round(Math.random() * 1e9)}${path.extname(req.files["document"][0].originalname)}`,
     buffer: req.files["document"][0].buffer,
     mimetype: req.files["document"][0].mimetype,
   } : null;
 
+  // Validate required fields
   if (!type_id || !price || !rukprice || !mkv || !address || !etaj || !etajnost) {
     return res.status(400).json({ error: "All required fields (type_id, price, rukprice, mkv, address, etaj, etajnost) must be provided" });
   }
@@ -740,22 +843,34 @@ app.put("/api/properties/:id", authenticate, upload.fields([
     return res.status(400).json({ error: "Fields price, rukprice, mkv, etaj, etajnost must be numeric" });
   }
 
-  let finalCuratorId = curator_id || (req.user.role === "REALTOR" ? req.user.id : null);
-  if (req.user.role === "REALTOR" && curator_id && curator_id != req.user.id) {
+  // Validate curator_id
+  let finalCuratorId;
+  if (curator_id) {
+    if (isNaN(parseInt(curator_id))) {
+      return res.status(400).json({ error: "curator_id must be a valid number" });
+    }
+    finalCuratorId = parseInt(curator_id);
+  } else {
+    finalCuratorId = req.user.role === "REALTOR" ? req.user.id : null;
+  }
+
+  if (req.user.role === "REALTOR" && finalCuratorId && finalCuratorId !== req.user.id) {
     return res.status(403).json({ error: "Realtor can only assign themselves as curator" });
   }
 
+  let connection;
   try {
-    const connection = await pool.getConnection();
-    const [existingProperties] = await connection.execute("SELECT photos, document, curator_id FROM properties WHERE id = ?", [id]);
+    connection = await pool.getConnection();
+    const [existingProperties] = await connection.execute(
+      "SELECT photos, document, curator_id FROM properties WHERE id = ?",
+      [id]
+    );
     if (existingProperties.length === 0) {
-      connection.release();
       return res.status(404).json({ error: "Property not found" });
     }
 
     const existingProperty = existingProperties[0];
-    if (req.user.role === "REALTOR" && existingProperty.curator_id && existingProperty.curator_id != req.user.id) {
-      connection.release();
+    if (req.user.role === "REALTOR" && existingProperty.curator_id && existingProperty.curator_id !== req.user.id) {
       return res.status(403).json({ error: "You do not have permission to edit this property" });
     }
 
@@ -763,7 +878,6 @@ app.put("/api/properties/:id", authenticate, upload.fields([
     if (zhk_id) {
       const [jkCheck] = await connection.execute("SELECT id FROM jk WHERE id = ?", [zhk_id]);
       if (jkCheck.length === 0) {
-        connection.release();
         return res.status(400).json({ error: "Invalid JK ID" });
       }
     }
@@ -772,16 +886,17 @@ app.put("/api/properties/:id", authenticate, upload.fields([
     if (district_id) {
       const [districtCheck] = await connection.execute("SELECT id FROM districts WHERE id = ?", [district_id]);
       if (districtCheck.length === 0) {
-        connection.release();
         return res.status(400).json({ error: "Invalid district ID" });
       }
     }
 
     // Validate subdistrict_id
     if (subdistrict_id) {
-      const [subdistrictCheck] = await connection.execute("SELECT id FROM subdistricts WHERE id = ? AND district_id = ?", [subdistrict_id, district_id || null]);
+      const [subdistrictCheck] = await connection.execute(
+        "SELECT id FROM subdistricts WHERE id = ? AND district_id = ?",
+        [subdistrict_id, district_id || null]
+      );
       if (subdistrictCheck.length === 0) {
-        connection.release();
         return res.status(400).json({ error: "Invalid subdistrict ID or subdistrict does not belong to the selected district" });
       }
     }
@@ -794,7 +909,6 @@ app.put("/api/properties/:id", authenticate, upload.fields([
         [finalCuratorId]
       );
       if (curatorCheck.length === 0) {
-        connection.release();
         return res.status(400).json({ error: "Invalid curator ID" });
       }
       curatorName = curatorCheck[0].curator_name;
@@ -806,8 +920,8 @@ app.put("/api/properties/:id", authenticate, upload.fields([
       try {
         photoFiles = JSON.parse(existingProperty.photos) || [];
       } catch (error) {
-        console.warn(`Error parsing photos for ID: ${id}, falling back to split:`, existingProperty.photos);
-        photoFiles = existingProperty.photos.split(",").filter(p => p.trim());
+        console.warn(`Error parsing photos for ID: ${id}, falling back to empty array:`, error.message);
+        photoFiles = [];
       }
     }
 
@@ -815,20 +929,31 @@ app.put("/api/properties/:id", authenticate, upload.fields([
     if (existingPhotos) {
       try {
         existingPhotosList = JSON.parse(existingPhotos) || [];
+        if (!Array.isArray(existingPhotosList) || !existingPhotosList.every(p => typeof p === "string" && p.trim() && photoFiles.includes(p))) {
+          return res.status(400).json({ error: "Invalid existingPhotos: must be an array of valid photo filenames" });
+        }
       } catch (error) {
-        console.warn(`Error parsing existingPhotos for ID: ${id}:`, existingPhotos);
-        existingPhotosList = [];
+        console.error(`Error parsing existingPhotos for ID: ${id}:`, error.message);
+        return res.status(400).json({ error: "Invalid existingPhotos format" });
       }
+    } else {
+      // Keep all existing photos if none specified
+      existingPhotosList = photoFiles;
     }
 
     // Upload new photos
     for (const photo of photos) {
-      await s3Client.send(new PutObjectCommand({
-        Bucket: bucketName,
-        Key: photo.filename,
-        Body: photo.buffer,
-        ContentType: photo.mimetype,
-      }));
+      try {
+        await s3Client.send(new PutObjectCommand({
+          Bucket: bucketName,
+          Key: photo.filename,
+          Body: photo.buffer,
+          ContentType: photo.mimetype,
+        }));
+      } catch (error) {
+        console.error(`Failed to upload photo to S3: ${photo.filename}`, error.message);
+        throw new Error(`Failed to upload photo: ${photo.filename}`);
+      }
     }
 
     // Delete old photos not in existingPhotosList
@@ -837,7 +962,7 @@ app.put("/api/properties/:id", authenticate, upload.fields([
       try {
         await s3Client.send(new DeleteObjectCommand({ Bucket: bucketName, Key: oldPhoto }));
       } catch (error) {
-        console.warn(`Failed to delete old photo from S3: ${oldPhoto}`);
+        console.warn(`Failed to delete old photo from S3: ${oldPhoto}`, error.message);
       }
     }
 
@@ -848,22 +973,28 @@ app.put("/api/properties/:id", authenticate, upload.fields([
     // Handle document
     let newDocument = existingProperty.document;
     if (document) {
-      await s3Client.send(new PutObjectCommand({
-        Bucket: bucketName,
-        Key: document.filename,
-        Body: document.buffer,
-        ContentType: document.mimetype,
-      }));
-      if (existingProperty.document) {
-        try {
-          await s3Client.send(new DeleteObjectCommand({ Bucket: bucketName, Key: existingProperty.document }));
-        } catch (error) {
-          console.warn(`Failed to delete old document from S3: ${existingProperty.document}`);
+      try {
+        await s3Client.send(new PutObjectCommand({
+          Bucket: bucketName,
+          Key: document.filename,
+          Body: document.buffer,
+          ContentType: document.mimetype,
+        }));
+        if (existingProperty.document) {
+          try {
+            await s3Client.send(new DeleteObjectCommand({ Bucket: bucketName, Key: existingProperty.document }));
+          } catch (error) {
+            console.warn(`Failed to delete old document from S3: ${existingProperty.document}`, error.message);
+          }
         }
+        newDocument = document.filename;
+      } catch (error) {
+        console.error(`Failed to upload document to S3: ${document.filename}`, error.message);
+        throw new Error(`Failed to upload document: ${document.filename}`);
       }
-      newDocument = document.filename;
     }
 
+    // Update the property
     await connection.execute(
       `UPDATE properties SET
         type_id = ?, \`condition\` = ?, series = ?, zhk_id = ?, document_id = ?, owner_name = ?, curator_id = ?, price = ?, unit = ?, rukprice = ?, mkv = ?, room = ?, phone = ?,
@@ -929,11 +1060,12 @@ app.put("/api/properties/:id", authenticate, upload.fields([
       time: new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" }),
     };
 
-    connection.release();
     res.json(updatedProperty);
   } catch (error) {
     console.error("Error updating property:", error.message);
     res.status(500).json({ error: `Internal server error: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
   }
 });
 
@@ -945,17 +1077,19 @@ app.delete("/api/properties/:id", authenticate, async (req, res) => {
 
   const { id } = req.params;
 
+  let connection;
   try {
-    const connection = await pool.getConnection();
-    const [properties] = await connection.execute("SELECT photos, document, curator_id FROM properties WHERE id = ?", [id]);
+    connection = await pool.getConnection();
+    const [properties] = await connection.execute(
+      "SELECT photos, document, curator_id FROM properties WHERE id = ?",
+      [id]
+    );
     if (properties.length === 0) {
-      connection.release();
       return res.status(404).json({ error: "Property not found" });
     }
 
     const existingProperty = properties[0];
-    if (req.user.role === "REALTOR" && existingProperty.curator_id && existingProperty.curator_id != req.user.id) {
-      connection.release();
+    if (req.user.role === "REALTOR" && existingProperty.curator_id && existingProperty.curator_id !== req.user.id) {
       return res.status(403).json({ error: "You do not have permission to delete this property" });
     }
 
@@ -964,14 +1098,14 @@ app.delete("/api/properties/:id", authenticate, async (req, res) => {
       try {
         photoFiles = JSON.parse(existingProperty.photos) || [];
       } catch (error) {
-        console.warn(`Error parsing photos for ID: ${id}:`, existingProperty.photos);
-        photoFiles = existingProperty.photos.split(",").filter(p => p.trim());
+        console.warn(`Error parsing photos for ID: ${id}:`, error.message);
+        photoFiles = [];
       }
       for (const img of photoFiles) {
         try {
           await s3Client.send(new DeleteObjectCommand({ Bucket: bucketName, Key: img }));
         } catch (error) {
-          console.warn(`Failed to delete image from S3: ${img}`);
+          console.warn(`Failed to delete image from S3: ${img}`, error.message);
         }
       }
     }
@@ -980,23 +1114,25 @@ app.delete("/api/properties/:id", authenticate, async (req, res) => {
       try {
         await s3Client.send(new DeleteObjectCommand({ Bucket: bucketName, Key: existingProperty.document }));
       } catch (error) {
-        console.warn(`Failed to delete document from S3: ${existingProperty.document}`);
+        console.warn(`Failed to delete document from S3: ${existingProperty.document}`, error.message);
       }
     }
 
     await connection.execute("DELETE FROM properties WHERE id = ?", [id]);
-    connection.release();
     res.json({ message: "Property successfully deleted" });
   } catch (error) {
     console.error("Error deleting property:", error.message);
     res.status(500).json({ error: `Internal server error: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
   }
 });
 
 // Get All Properties (Protected)
 app.get("/api/properties", authenticate, async (req, res) => {
+  let connection;
   try {
-    const connection = await pool.getConnection();
+    connection = await pool.getConnection();
     const [rows] = await connection.execute(
       `SELECT p.*, CONCAT(u.first_name, ' ', u.last_name) AS curator_name
        FROM properties p
@@ -1009,8 +1145,8 @@ app.get("/api/properties", authenticate, async (req, res) => {
         try {
           parsedPhotos = JSON.parse(row.photos) || [];
         } catch (error) {
-          console.warn(`Error parsing photos for ID: ${row.id}:`, row.photos);
-          parsedPhotos = row.photos.split(",").filter(p => p.trim());
+          console.warn(`Error parsing photos for ID: ${row.id}:`, error.message);
+          parsedPhotos = [];
         }
       }
 
@@ -1024,18 +1160,20 @@ app.get("/api/properties", authenticate, async (req, res) => {
       };
     });
 
-    connection.release();
     res.json(properties);
   } catch (error) {
     console.error("Error retrieving properties:", error.message);
     res.status(500).json({ error: `Internal server error: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
   }
 });
 
 // Get All Listings for AdminDashboard (Protected)
 app.get("/api/listings", authenticate, async (req, res) => {
+  let connection;
   try {
-    const connection = await pool.getConnection();
+    connection = await pool.getConnection();
     const [rows] = await connection.execute(
       "SELECT id, type_id, price, rukprice, mkv, status, address, created_at FROM properties"
     );
@@ -1050,31 +1188,34 @@ app.get("/api/listings", authenticate, async (req, res) => {
       status: row.status,
     }));
 
-    connection.release();
     res.json(listings);
   } catch (error) {
     console.error("Error retrieving listings:", error.message);
     res.status(500).json({ error: `Internal server error: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
   }
 });
 
 // Get All Districts and Subdistricts
 app.get("/api/raions", authenticate, async (req, res) => {
+  let connection;
   try {
-    const connection = await pool.getConnection();
+    connection = await pool.getConnection();
     const [districts] = await connection.execute("SELECT id, name, NULL AS parentRaionId FROM districts");
     const [subdistricts] = await connection.execute("SELECT id, name, district_id AS parentRaionId FROM subdistricts");
-    
+
     const raions = [
       ...districts.map(row => ({ id: row.id, name: row.name, parentRaionId: null, isRaion: true })),
       ...subdistricts.map(row => ({ id: row.id, name: row.name, parentRaionId: row.parentRaionId, isRaion: false })),
     ];
 
-    connection.release();
     res.json(raions);
   } catch (error) {
     console.error("Error retrieving districts and subdistricts:", error.message);
     res.status(500).json({ error: `Internal server error: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
   }
 });
 
@@ -1090,14 +1231,20 @@ app.patch("/api/properties/redirect", authenticate, async (req, res) => {
     return res.status(400).json({ error: "propertyIds must be an array, curator_id is required" });
   }
 
+  // Validate curator_id
+  if (isNaN(parseInt(curator_id))) {
+    return res.status(400).json({ error: "curator_id must be a valid number" });
+  }
+  const finalCuratorId = parseInt(curator_id);
+
+  let connection;
   try {
-    const connection = await pool.getConnection();
+    connection = await pool.getConnection();
     const [curatorCheck] = await connection.execute(
       "SELECT id, CONCAT(first_name, ' ', last_name) AS curator_name FROM users1 WHERE id = ?",
-      [curator_id]
+      [finalCuratorId]
     );
     if (curatorCheck.length === 0) {
-      connection.release();
       return res.status(400).json({ error: "Invalid curator ID" });
     }
 
@@ -1106,20 +1253,20 @@ app.patch("/api/properties/redirect", authenticate, async (req, res) => {
       [propertyIds]
     );
     if (existingProperties.length !== propertyIds.length) {
-      connection.release();
       return res.status(404).json({ error: "Some properties not found" });
     }
 
     const [result] = await connection.execute(
       "UPDATE properties SET curator_id = ? WHERE id IN (?)",
-      [curator_id, propertyIds]
+      [finalCuratorId, propertyIds]
     );
 
-    connection.release();
     res.json({ message: "Properties successfully redirected", affectedRows: result.affectedRows });
   } catch (error) {
     console.error("Error redirecting properties:", error.message);
     res.status(500).json({ error: `Internal server error: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
   }
 });
 
