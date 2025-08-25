@@ -131,7 +131,7 @@ async function testDatabaseConnection() {
         CREATE TABLE properties (
           id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
           type_id VARCHAR(255) DEFAULT NULL,
-          \`condition\` VARCHAR(255) DEFAULT NULL,
+          repair VARCHAR(255) DEFAULT NULL,
           series VARCHAR(255) DEFAULT NULL,
           zhk_id VARCHAR(255) DEFAULT NULL,
           document_id INT NOT NULL DEFAULT 0,
@@ -141,7 +141,7 @@ async function testDatabaseConnection() {
           unit VARCHAR(50) DEFAULT NULL,
           rukprice DECIMAL(15,2) NOT NULL,
           mkv DECIMAL(10,2) NOT NULL,
-          room VARCHAR(10) DEFAULT NULL,
+          rooms VARCHAR(10) DEFAULT NULL,
           phone VARCHAR(50) DEFAULT NULL,
           district_id VARCHAR(255) DEFAULT NULL,
           subdistrict_id VARCHAR(255) DEFAULT NULL,
@@ -161,6 +161,24 @@ async function testDatabaseConnection() {
           FOREIGN KEY (curator_id) REFERENCES users1(id) ON DELETE SET NULL
         ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
       `);
+    } else {
+      // Проверка и переименование столбца condition в repair
+      const [conditionColumns] = await connection.execute(
+        "SHOW COLUMNS FROM properties LIKE 'condition'"
+      );
+      if (conditionColumns.length > 0) {
+        console.log("Renaming column 'condition' to 'repair'...");
+        await connection.execute("ALTER TABLE properties CHANGE COLUMN `condition` `repair` VARCHAR(255) DEFAULT NULL");
+      }
+
+      // Проверка и переименование столбца room в rooms
+      const [roomColumns] = await connection.execute(
+        "SHOW COLUMNS FROM properties LIKE 'room'"
+      );
+      if (roomColumns.length > 0) {
+        console.log("Renaming column 'room' to 'rooms'...");
+        await connection.execute("ALTER TABLE properties CHANGE COLUMN `room` `rooms` VARCHAR(10) DEFAULT NULL");
+      }
     }
 
     // Create jk table
@@ -582,7 +600,7 @@ app.post("/api/properties", authenticate, upload.fields([
 
   const {
     type_id,
-    condition,
+    repair,
     series,
     zhk_id,
     owner_name,
@@ -591,7 +609,7 @@ app.post("/api/properties", authenticate, upload.fields([
     unit,
     rukprice,
     mkv,
-    room,
+    rooms,
     phone,
     district_id,
     subdistrict_id,
@@ -623,6 +641,34 @@ app.post("/api/properties", authenticate, upload.fields([
 
   if (isNaN(parseFloat(price)) || isNaN(parseFloat(rukprice)) || isNaN(parseFloat(mkv)) || isNaN(parseInt(etaj)) || isNaN(parseInt(etajnost))) {
     return res.status(400).json({ error: "Fields price, rukprice, mkv, etaj, etajnost must be numeric" });
+  }
+
+  // Validate repair
+  if (type_id === "Квартира" && repair && !["ПСО", "С отделкой"].includes(repair)) {
+    return res.status(400).json({ error: "Invalid repair value. Must be one of: ПСО, С отделкой" });
+  }
+
+  // Validate series
+  if (type_id === "Квартира" && series && ![
+    "105 серия",
+    "106 серия",
+    "Индивидуалка",
+    "Элитка",
+    "103 серия",
+    "106 серия улучшенная",
+    "107 серия",
+    "108 серия",
+    "Малосемейка",
+    "Общежитие и Гостиничного типа",
+    "Сталинка",
+    "Хрущевка",
+  ].includes(series)) {
+    return res.status(400).json({ error: "Invalid series value. Must be one of: 105 серия, 106 серия, Индивидуалка, Элитка, 103 серия, 106 серия улучшенная, 107 серия, 108 серия, Малосемейка, Общежитие и Гостиничного типа, Сталинка, Хрущевка" });
+  }
+
+  // Validate rooms
+  if (type_id === "Квартира" && rooms && !["1", "2", "3", "4", "5+"].includes(rooms)) {
+    return res.status(400).json({ error: "Invalid rooms value. Must be one of: 1, 2, 3, 4, 5+" });
   }
 
   // Validate curator_id
@@ -716,12 +762,12 @@ app.post("/api/properties", authenticate, upload.fields([
     const photosJson = photos.length > 0 ? JSON.stringify(photos.map(img => img.filename)) : null;
     const [result] = await connection.execute(
       `INSERT INTO properties (
-        type_id, \`condition\`, series, zhk_id, document_id, owner_name, curator_id, price, unit, rukprice, mkv, room, phone, 
+        type_id, repair, series, zhk_id, document_id, owner_name, curator_id, price, unit, rukprice, mkv, rooms, phone, 
         district_id, subdistrict_id, address, notes, description, photos, document, status, owner_id, etaj, etajnost
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         type_id || null,
-        condition || null,
+        repair || null,
         series || null,
         zhk_id || null,
         0,
@@ -731,7 +777,7 @@ app.post("/api/properties", authenticate, upload.fields([
         unit || null,
         rukprice,
         mkv,
-        room || null,
+        rooms || null,
         phone || null,
         district_id || null,
         subdistrict_id || null,
@@ -750,7 +796,7 @@ app.post("/api/properties", authenticate, upload.fields([
     const newProperty = {
       id: result.insertId,
       type_id,
-      condition,
+      repair,
       series,
       zhk_id,
       document_id: 0,
@@ -761,7 +807,7 @@ app.post("/api/properties", authenticate, upload.fields([
       unit,
       rukprice,
       mkv,
-      room,
+      rooms,
       phone,
       district_id,
       subdistrict_id,
@@ -799,7 +845,7 @@ app.put("/api/properties/:id", authenticate, upload.fields([
   const { id } = req.params;
   const {
     type_id,
-    condition,
+    repair,
     series,
     zhk_id,
     owner_name,
@@ -808,7 +854,7 @@ app.put("/api/properties/:id", authenticate, upload.fields([
     unit,
     rukprice,
     mkv,
-    room,
+    rooms,
     phone,
     district_id,
     subdistrict_id,
@@ -841,6 +887,34 @@ app.put("/api/properties/:id", authenticate, upload.fields([
 
   if (isNaN(parseFloat(price)) || isNaN(parseFloat(rukprice)) || isNaN(parseFloat(mkv)) || isNaN(parseInt(etaj)) || isNaN(parseInt(etajnost))) {
     return res.status(400).json({ error: "Fields price, rukprice, mkv, etaj, etajnost must be numeric" });
+  }
+
+  // Validate repair
+  if (type_id === "Квартира" && repair && !["ПСО", "С отделкой"].includes(repair)) {
+    return res.status(400).json({ error: "Invalid repair value. Must be one of: ПСО, С отделкой" });
+  }
+
+  // Validate series
+  if (type_id === "Квартира" && series && ![
+    "105 серия",
+    "106 серия",
+    "Индивидуалка",
+    "Элитка",
+    "103 серия",
+    "106 серия улучшенная",
+    "107 серия",
+    "108 серия",
+    "Малосемейка",
+    "Общежитие и Гостиничного типа",
+    "Сталинка",
+    "Хрущевка",
+  ].includes(series)) {
+    return res.status(400).json({ error: "Invalid series value. Must be one of: 105 серия, 106 серия, Индивидуалка, Элитка, 103 серия, 106 серия улучшенная, 107 серия, 108 серия, Малосемейка, Общежитие и Гостиничного типа, Сталинка, Хрущевка" });
+  }
+
+  // Validate rooms
+  if (type_id === "Квартира" && rooms && !["1", "2", "3", "4", "5+"].includes(rooms)) {
+    return res.status(400).json({ error: "Invalid rooms value. Must be one of: 1, 2, 3, 4, 5+" });
   }
 
   // Validate curator_id
@@ -997,12 +1071,12 @@ app.put("/api/properties/:id", authenticate, upload.fields([
     // Update the property
     await connection.execute(
       `UPDATE properties SET
-        type_id = ?, \`condition\` = ?, series = ?, zhk_id = ?, document_id = ?, owner_name = ?, curator_id = ?, price = ?, unit = ?, rukprice = ?, mkv = ?, room = ?, phone = ?,
+        type_id = ?, repair = ?, series = ?, zhk_id = ?, document_id = ?, owner_name = ?, curator_id = ?, price = ?, unit = ?, rukprice = ?, mkv = ?, rooms = ?, phone = ?,
         district_id = ?, subdistrict_id = ?, address = ?, notes = ?, description = ?, photos = ?, document = ?, status = ?, owner_id = ?, etaj = ?, etajnost = ?
         WHERE id = ?`,
       [
         type_id || null,
-        condition || null,
+        repair || null,
         series || null,
         zhk_id || null,
         0,
@@ -1012,7 +1086,7 @@ app.put("/api/properties/:id", authenticate, upload.fields([
         unit || null,
         rukprice,
         mkv,
-        room || null,
+        rooms || null,
         phone || null,
         district_id || null,
         subdistrict_id || null,
@@ -1032,7 +1106,7 @@ app.put("/api/properties/:id", authenticate, upload.fields([
     const updatedProperty = {
       id: parseInt(id),
       type_id,
-      condition,
+      repair,
       series,
       zhk_id,
       document_id: 0,
@@ -1043,7 +1117,7 @@ app.put("/api/properties/:id", authenticate, upload.fields([
       unit,
       rukprice,
       mkv,
-      room,
+      rooms,
       phone,
       district_id,
       subdistrict_id,
@@ -1152,6 +1226,8 @@ app.get("/api/properties", authenticate, async (req, res) => {
 
       return {
         ...row,
+        repair: row.repair || null,
+        rooms: row.rooms || null,
         photos: parsedPhotos.map(img => `https://s3.twcstorage.ru/${bucketName}/${img}`),
         document: row.document ? `https://s3.twcstorage.ru/${bucketName}/${row.document}` : null,
         date: new Date(row.created_at).toLocaleDateString("ru-RU"),
