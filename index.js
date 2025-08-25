@@ -45,11 +45,11 @@ const bucketName = process.env.S3_BUCKET || "a2c31109-3cf2c97b-aca1-42b0-a822-3e
 // Middleware
 const corsOptions = {
   origin: [
-    publicDomain,
+    publicDomain, // https://vasya010-backend1-10db.twc1.net
     "http://localhost:3000",
-    "https://alatooned.ru"
+    "https://alatooned.ru" // Добавьте ваш фронтенд-домен
   ],
-  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"], // Добавьте OPTIONS для preflight-запросов
   allowedHeaders: ["Content-Type", "Authorization"],
   credentials: true,
 };
@@ -108,12 +108,11 @@ const userSchema = Joi.object({
   password: Joi.string().min(6).required(),
 });
 
-// Обновленная схема для соответствия структуре таблицы (phone заменен на owner_phone)
 const propertySchema = Joi.object({
   type_id: Joi.string().required(),
-  price: Joi.number().positive().precision(2).required(),
-  rukprice: Joi.number().positive().precision(2).required(),
-  mkv: Joi.number().positive().precision(2).required(),
+  price: Joi.number().positive().required(),
+  rukprice: Joi.number().positive().required(),
+  mkv: Joi.number().positive().required(),
   address: Joi.string().min(1).required(),
   etaj: Joi.number().integer().positive().required(),
   etajnost: Joi.number().integer().positive().required(),
@@ -124,7 +123,7 @@ const propertySchema = Joi.object({
   curator_ids: Joi.string().optional().allow(null),
   unit: Joi.string().optional().allow(null),
   room: Joi.string().optional().allow(null),
-  owner_phone: Joi.string().optional().allow(null), // Изменено с phone на owner_phone
+  phone: Joi.string().optional().allow(null),
   district_id: Joi.string().optional().allow(null),
   subdistrict_id: Joi.string().optional().allow(null),
   notes: Joi.string().optional().allow(null),
@@ -214,12 +213,12 @@ async function testDatabaseConnection() {
           document_id INT DEFAULT NULL,
           owner_name VARCHAR(255) DEFAULT NULL,
           curator_ids TEXT DEFAULT NULL,
-          price DECIMAL(15,2) NOT NULL,
+          price TEXT NOT NULL,
           unit VARCHAR(50) DEFAULT NULL,
-          rukprice DECIMAL(15,2) NOT NULL,
-          mkv DECIMAL(10,2) NOT NULL,
+          rukprice VARCHAR(50) NOT NULL,
+          mkv VARCHAR(12) NOT NULL,
           room VARCHAR(10) DEFAULT NULL,
-          owner_phone VARCHAR(50) DEFAULT NULL,
+          phone VARCHAR(50) DEFAULT NULL,
           district_id VARCHAR(255) DEFAULT NULL,
           subdistrict_id VARCHAR(255) DEFAULT NULL,
           address TEXT DEFAULT NULL,
@@ -233,38 +232,10 @@ async function testDatabaseConnection() {
           document VARCHAR(255) DEFAULT NULL,
           status VARCHAR(50) DEFAULT NULL,
           owner_id INT DEFAULT NULL,
-          etaj INT NOT NULL,
-          etajnost INT NOT NULL
+          etaj VARCHAR(255) NOT NULL,
+          etajnost VARCHAR(255) NOT NULL
         ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
       `);
-    } else {
-      // Проверка и обновление типов столбцов
-      const [columns] = await connection.execute("SHOW COLUMNS FROM properties");
-      const columnTypes = columns.reduce((acc, col) => ({ ...acc, [col.Field]: col.Type }), {});
-      
-      if (columnTypes.price !== 'decimal(15,2)' || columnTypes.rukprice !== 'decimal(15,2)' || columnTypes.mkv !== 'decimal(10,2)' || 
-          columnTypes.etaj !== 'int' || columnTypes.etajnost !== 'int') {
-        logger.info("Обновление типов столбцов в таблице properties...");
-        await connection.execute(`
-          ALTER TABLE properties
-            MODIFY price DECIMAL(15,2) NOT NULL,
-            MODIFY rukprice DECIMAL(15,2) NOT NULL,
-            MODIFY mkv DECIMAL(10,2) NOT NULL,
-            MODIFY etaj INT NOT NULL,
-            MODIFY etajnost INT NOT NULL
-        `);
-        logger.info("Типы столбцов в таблице properties обновлены.");
-      }
-      
-      // Проверка наличия столбца owner_phone вместо phone
-      if (!columns.some(col => col.Field === 'owner_phone')) {
-        logger.info("Столбец owner_phone не существует, добавляется...");
-        await connection.execute("ALTER TABLE properties ADD owner_phone VARCHAR(50) DEFAULT NULL");
-      }
-      if (columns.some(col => col.Field === 'phone')) {
-        logger.info("Столбец phone существует, переименовывается в owner_phone...");
-        await connection.execute("ALTER TABLE properties CHANGE phone owner_phone VARCHAR(50) DEFAULT NULL");
-      }
     }
 
     // Добавление индексов для таблицы properties
@@ -778,7 +749,7 @@ app.post("/api/properties", authenticate, upload.fields([
     return res.status(400).json({ error: error.details[0].message });
   }
 
-  const { type_id, condition, series, zhk_id, owner_name, curator_ids, price, unit, rukprice, mkv, room, owner_phone, district_id, subdistrict_id, address, notes, description, status, owner_id, etaj, etajnost } = value;
+  const { type_id, condition, series, zhk_id, owner_name, curator_ids, price, unit, rukprice, mkv, room, phone, district_id, subdistrict_id, address, notes, description, status, owner_id, etaj, etajnost } = value;
   const photos = req.files["photos"] ? req.files["photos"].map((file) => ({
     filename: `${Date.now()}-${Math.round(Math.random() * 1e9)}${path.extname(file.originalname)}`,
     buffer: file.buffer,
@@ -862,44 +833,39 @@ app.post("/api/properties", authenticate, upload.fields([
     }
 
     const photosJson = JSON.stringify(photos.map(img => img.filename));
-    // Используем числовые значения напрямую, так как столбцы теперь DECIMAL и INT
-    const queryParams = [
-      type_id || null,
-      condition || null,
-      series || null,
-      zhk_id || null,
-      null,
-      owner_name || null,
-      finalCuratorIds,
-      price,
-      unit || null,
-      rukprice,
-      mkv,
-      room || null,
-      owner_phone || null, // Изменено с phone на owner_phone
-      district_id || null,
-      subdistrict_id || null,
-      address,
-      notes || null,
-      description || null,
-      null,
-      null,
-      photosJson,
-      document ? document.filename : null,
-      status || null,
-      owner_id || null,
-      etaj,
-      etajnost,
-    ];
-
-    logger.info("Параметры запроса для INSERT INTO properties:", queryParams);
-
     const [result] = await connection.execute(
       `INSERT INTO properties (
-        type_id, \`condition\`, series, zhk_id, document_id, owner_name, curator_ids, price, unit, rukprice, mkv, room, owner_phone, 
+        type_id, \`condition\`, series, zhk_id, document_id, owner_name, curator_ids, price, unit, rukprice, mkv, room, phone, 
         district_id, subdistrict_id, address, notes, description, latitude, longitude, photos, document, status, owner_id, etaj, etajnost
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      queryParams
+      [
+        type_id || null,
+        condition || null,
+        series || null,
+        zhk_id || null,
+        null,
+        owner_name || null,
+        finalCuratorIds,
+        price,
+        unit || null,
+        rukprice,
+        mkv,
+        room || null,
+        phone || null,
+        district_id || null,
+        subdistrict_id || null,
+        address,
+        notes || null,
+        description || null,
+        null,
+        null,
+        photosJson,
+        document ? document.filename : null,
+        status || null,
+        owner_id || null,
+        etaj,
+        etajnost,
+      ]
     );
 
     await connection.commit();
@@ -919,7 +885,7 @@ app.post("/api/properties", authenticate, upload.fields([
       rukprice,
       mkv,
       room,
-      owner_phone, // Изменено с phone на owner_phone
+      phone,
       district_id,
       subdistrict_id,
       address,
@@ -963,7 +929,7 @@ app.put("/api/properties/:id", authenticate, upload.fields([
     return res.status(400).json({ error: error.details[0].message });
   }
 
-  const { type_id, condition, series, zhk_id, owner_name, curator_ids, price, unit, rukprice, mkv, room, owner_phone, district_id, subdistrict_id, address, notes, description, status, owner_id, etaj, etajnost, existingPhotos } = value;
+  const { type_id, condition, series, zhk_id, owner_name, curator_ids, price, unit, rukprice, mkv, room, phone, district_id, subdistrict_id, address, notes, description, status, owner_id, etaj, etajnost, existingPhotos } = value;
   const photos = req.files["photos"] ? req.files["photos"].map((file) => ({
     filename: `${Date.now()}-${Math.round(Math.random() * 1e9)}${path.extname(file.originalname)}`,
     buffer: file.buffer,
@@ -1112,43 +1078,38 @@ app.put("/api/properties/:id", authenticate, upload.fields([
       newDocument = document.filename;
     }
 
-    // Используем числовые значения напрямую, так как столбцы теперь DECIMAL и INT
-    const queryParams = [
-      type_id || null,
-      condition || null,
-      series || null,
-      zhk_id || null,
-      null,
-      owner_name || null,
-      finalCuratorIds,
-      price,
-      unit || null,
-      rukprice,
-      mkv,
-      room || null,
-      owner_phone || null, // Изменено с phone на owner_phone
-      district_id || null,
-      subdistrict_id || null,
-      address,
-      notes || null,
-      description || null,
-      photosJson,
-      newDocument,
-      status || null,
-      owner_id || null,
-      etaj,
-      etajnost,
-      id,
-    ];
-
-    logger.info("Параметры запроса для UPDATE properties:", queryParams);
-
     const [result] = await connection.execute(
       `UPDATE properties SET
-        type_id = ?, \`condition\` = ?, series = ?, zhk_id = ?, document_id = ?, owner_name = ?, curator_ids = ?, price = ?, unit = ?, rukprice = ?, mkv = ?, room = ?, owner_phone = ?,
+        type_id = ?, \`condition\` = ?, series = ?, zhk_id = ?, document_id = ?, owner_name = ?, curator_ids = ?, price = ?, unit = ?, rukprice = ?, mkv = ?, room = ?, phone = ?,
         district_id = ?, subdistrict_id = ?, address = ?, notes = ?, description = ?, photos = ?, document = ?, status = ?, owner_id = ?, etaj = ?, etajnost = ?
         WHERE id = ?`,
-      queryParams
+      [
+        type_id || null,
+        condition || null,
+        series || null,
+        zhk_id || null,
+        null,
+        owner_name || null,
+        finalCuratorIds,
+        price,
+        unit || null,
+        rukprice,
+        mkv,
+        room || null,
+        phone || null,
+        district_id || null,
+        subdistrict_id || null,
+        address,
+        notes || null,
+        description || null,
+        photosJson,
+        newDocument,
+        status || null,
+        owner_id || null,
+        etaj,
+        etajnost,
+        id,
+      ]
     );
 
     if (result.affectedRows === 0) {
@@ -1173,7 +1134,7 @@ app.put("/api/properties/:id", authenticate, upload.fields([
       rukprice,
       mkv,
       room,
-      owner_phone, // Изменено с phone на owner_phone
+      phone,
       district_id,
       subdistrict_id,
       address,
@@ -1314,7 +1275,6 @@ app.get("/api/properties", authenticate, async (req, res) => {
 
       return {
         ...row,
-        owner_phone: row.owner_phone, // Изменено с phone на owner_phone
         photos: parsedPhotos.map((img) => `https://s3.twcstorage.ru/${bucketName}/${img}`),
         document: row.document ? `https://s3.twcstorage.ru/${bucketName}/${row.document}` : null,
         date: new Date(row.created_at).toLocaleDateString("ru-RU"),
