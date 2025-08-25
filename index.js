@@ -802,7 +802,7 @@ app.post("/api/properties", authenticate, upload.fields([
 ]), async (req, res) => {
   if (!["SUPER_ADMIN", "REALTOR"].includes(req.user.role)) {
     console.error("Доступ запрещен: Требуется роль SUPER_ADMIN или REALTOR");
-    return res.status(403).json({ error: "Доступ запрещен: Требуется роль SUPER_ADMIN или Риелтор" });
+    return res.status(403).json({ error: "Доступ запрещен: Требуется роль SUPER_ADMIN или REALTOR" });
   }
 
   const { type_id, condition, series, zhk_id, owner_name, curator_ids, price, unit, rukprice, mkv, room, owner_phone, district_id, subdistrict_id, address, notes, description, status, owner_id, etaj, etajnost } = req.body;
@@ -967,8 +967,8 @@ app.put("/api/properties/:id", authenticate, upload.fields([
   { name: "document", maxCount: 1 },
 ]), async (req, res) => {
   if (!["SUPER_ADMIN", "REALTOR"].includes(req.user.role)) {
-    console.error("Доступ запрещен: Требуется роль SUPER_ADMIN или Риелтор");
-    return res.status(403).json({ error: "Доступ запрещен: Требуется роль SUPER_ADMIN или Риелтор" });
+    console.error("Доступ запрещен: Требуется роль SUPER_ADMIN или REALTOR");
+    return res.status(403).json({ error: "Доступ запрещен: Требуется роль SUPER_ADMIN или REALTOR" });
   }
 
   const { id } = req.params;
@@ -1221,8 +1221,8 @@ app.put("/api/properties/:id", authenticate, upload.fields([
 // Удаление объекта недвижимости (защищено, SUPER_ADMIN или REALTOR)
 app.delete("/api/properties/:id", authenticate, async (req, res) => {
   if (!["SUPER_ADMIN", "REALTOR"].includes(req.user.role)) {
-    console.error("Доступ запрещен: Требуется роль SUPER_ADMIN или Риелтор");
-    return res.status(403).json({ error: "Доступ запрещен: Требуется роль SUPER_ADMIN или Риелтор" });
+    console.error("Доступ запрещен: Требуется роль SUPER_ADMIN или REALTOR");
+    return res.status(403).json({ error: "Доступ запрещен: Требуется роль SUPER_ADMIN или REALTOR" });
   }
 
   const { id } = req.params;
@@ -1317,7 +1317,7 @@ app.get("/api/properties", authenticate, async (req, res) => {
 
       return {
         ...row,
-        owner_phone: row.owner_phone, // Use owner_phone instead of phone
+        owner_phone: row.phone, // Map 'phone' to 'owner_phone' for frontend consistency
         photos: parsedPhotos.map((img) => `https://s3.twcstorage.ru/${bucketName}/${img}`),
         document: row.document ? `https://s3.twcstorage.ru/${bucketName}/${row.document}` : null,
         date: new Date(row.created_at).toLocaleDateString("ru-RU"),
