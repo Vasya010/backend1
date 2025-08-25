@@ -795,6 +795,7 @@ app.get("/api/subdistricts", authenticate, async (req, res) => {
 });
 
 // Создание нового объекта недвижимости (защищено, SUPER_ADMIN или REALTOR)
+// Создание нового объекта недвижимости (защищено, SUPER_ADMIN или REALTOR)
 app.post("/api/properties", authenticate, upload.fields([
   { name: "photos", maxCount: 10 },
   { name: "document", maxCount: 1 },
@@ -936,7 +937,7 @@ app.post("/api/properties", authenticate, upload.fields([
       rukprice,
       mkv,
       room,
-      phone,
+      owner_phone: phone, // Map 'phone' to 'owner_phone' for frontend consistency
       district_id,
       subdistrict_id,
       address,
@@ -1217,6 +1218,7 @@ app.put("/api/properties/:id", authenticate, upload.fields([
 });
 
 // Удаление объекта недвижимости (защищено, SUPER_ADMIN или REALTOR)
+// Удаление объекта недвижимости (защищено, SUPER_ADMIN или REALTOR)
 app.delete("/api/properties/:id", authenticate, async (req, res) => {
   if (!["SUPER_ADMIN", "REALTOR"].includes(req.user.role)) {
     console.error("Доступ запрещен: Требуется роль SUPER_ADMIN или REALTOR");
@@ -1287,6 +1289,7 @@ app.delete("/api/properties/:id", authenticate, async (req, res) => {
 });
 
 // Получение всех объектов недвижимости (защищено)
+// Получение всех объектов недвижимости (защищено)
 app.get("/api/properties", authenticate, async (req, res) => {
   try {
     const connection = await pool.getConnection();
@@ -1314,6 +1317,7 @@ app.get("/api/properties", authenticate, async (req, res) => {
 
       return {
         ...row,
+        owner_phone: row.phone, // Map 'phone' to 'owner_phone' for frontend consistency
         photos: parsedPhotos.map((img) => `https://s3.twcstorage.ru/${bucketName}/${img}`),
         document: row.document ? `https://s3.twcstorage.ru/${bucketName}/${row.document}` : null,
         date: new Date(row.created_at).toLocaleDateString("ru-RU"),
