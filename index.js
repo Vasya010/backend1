@@ -1163,6 +1163,226 @@ app.get("/api/listings", authenticate, async (req, res) => {
   }
 });
 
+
+
+// Получение всех районов и микрорайонов
+app.get("/api/raions", authenticate, async (req, res) => {
+  try {
+    const connection = await pool.getConnection();
+    
+    // Получение районов
+    const [districts] = await connection.execute("SELECT id, name, NULL AS parentRaionId FROM districts");
+    
+    // Получение микрорайонов
+    const [subdistricts] = await connection.execute("SELECT id, name, district_id AS parentRaionId FROM subdistricts");
+    
+    // Объединяем районы и микрорайоны
+    const raions = [
+      ...districts.map(row => ({ id: row.id, name: row.name, parentRaionId: null, isRaion: true })),
+      ...subdistricts.map(row => ({ id: row.id, name: row.name, parentRaionId: row.parentRaionId, isRaion: false })),
+    ];
+    
+    console.log("Районы и микрорайоны получены:", raions.length);
+    connection.release();
+    res.json(raions);
+  } catch (error) {
+    console.error("Ошибка получения районов и микрорайонов:", error.message);
+    res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
+  }
+});
+
+
+// Создание нового района
+app.post("/api/raions", authenticate, async (req, res) => {
+  if (req.user.role !== "SUPER_ADMIN") {
+    console.error("Доступ запрещен: Требуется роль SUPER_ADMIN");
+    return res.status(403).json({ error: "Доступ запрещен: Требуется роль SUPER_ADMIN" });
+  }
+
+  const { name } = req.body;
+  if (!name) {
+    console.error("Ошибка: Поле name обязательно");
+    return res.status(400).json({ error: "Поле name обязательно" });
+  }
+
+  try {
+    const connection = await pool.getConnection();
+    const [result] = await connection.execute(
+      "INSERT INTO districts (name) VALUES (?)",
+      [name]
+    );
+    console.log("Создан новый район, ID:", result.insertId);
+    connection.release();
+    res.json({ id: result.insertId, name, parentRaionId: null, isRaion: true });
+  } catch (error) {
+    console.error("Ошибка создания района:", error.message);
+    res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
+  }
+});
+
+
+// Создание нового микрорайона
+app.post("/api/subraions", authenticate, async (req, res) => {
+  if (req.user.role !== "SUPER_ADMIN") {
+    console.error("Доступ запрещен: Требуется роль SUPER_ADMIN");
+    return res.status(403).json({ error: "Доступ запрещен: Требуется роль SUPER_ADMIN" });
+  }
+
+  const { name, parentRaionId } = req.body;
+  if (!name || !parentRaionId) {
+    console.error("Ошибка: Поля name и parentRaionId обязательны");
+    return res.status(400).json({ error: "Поля name и parentRaionId обязательны" });
+  }
+
+  try {
+    const connection = await pool.getConnection();
+    // Проверка существования района
+    const [districtCheck] = await connection.execute("SELECT id FROM districts WHERE id = ?", [parentRaionId]);
+    if (districtCheck.length === 0) {
+      connection.release();
+      return res.status(400).json({ error: "Недействительный ID района" });
+    }
+
+    const [result] = await connection.execute(
+      "INSERT INTO subdistricts (name, district_id) VALUES (?, ?)",
+      [name, parentRaionId]
+    );
+    console.log("Создан новый микрорайон, ID:", result.insertId);
+    connection.release();
+    res.json({ id: result.insertId, name, parentRaionId, isRaion: false });
+  } catch (error) {
+    console.error("Ошибка создания микрорайона:", error.message);
+    res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
+  }
+});
+
+
+// Обновление района
+app.put("/api/raions/:id", authenticate, async (req, res) => {
+  if (req.user.role !== "SUPER_ADMIN") {
+    console.error("Доступ запрещен: Требуется роль SUPER_ADMIN");
+    return res.status(403).json({ error: "Доступ запрещен: Требуется роль SUPER_ADMIN" });
+  }
+
+  const { id } = req.params;
+  const { name } = req.body;
+  if (!name) {
+    console.error("Ошибка: Поле name обязательно");
+    return res.status(400).json({ error: "Поле name обязательно" });
+  }
+
+  try {
+    const connection = await pool.getConnection();
+    const [result] = await connection.execute(
+      "UPDATE districts SET name = ? WHERE id = ?",
+      [name, id]
+    );
+    if (result.affectedRows === 0) {
+      connection.release();
+      return res.status(404).json({ error: "Район не найден" });
+    }
+    console.log("Район обновлен, ID:", id);
+    connection.release();
+    res.json({ id: parseInt(id), name, parentRaionId: null, isRaion: true });
+  } catch (error) {
+    console.error("Ошибка обновления района:", error.message);
+    res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
+  }
+});
+
+
+// Обновление микрорайона
+app.put("/api/subraions/:id", authenticate, async (req, res) => {
+  if (req.user.role !== "SUPER_ADMIN") {
+    console.error("Доступ запрещен: Требуется роль SUPER_ADMIN");
+    return res.status(403).json({ error: "Доступ запрещен: Требуется роль SUPER_ADMIN" });
+  }
+
+  const { id } = req.params;
+  const { name, parentRaionId } = req.body;
+  if (!name || !parentRaionId) {
+    console.error("Ошибка: Поля name и parentRaionId обязательны");
+    return res.status(400).json({ error: "Поля name и parentRaionId обязательны" });
+  }
+
+  try {
+    const connection = await pool.getConnection();
+    // Проверка существования района
+    const [districtCheck] = await connection.execute("SELECT id FROM districts WHERE id = ?", [parentRaionId]);
+    if (districtCheck.length === 0) {
+      connection.release();
+      return res.status(400).json({ error: "Недействительный ID района" });
+    }
+
+    const [result] = await connection.execute(
+      "UPDATE subdistricts SET name = ?, district_id = ? WHERE id = ?",
+      [name, parentRaionId, id]
+    );
+    if (result.affectedRows === 0) {
+      connection.release();
+      return res.status(404).json({ error: "Микрорайон не найден" });
+    }
+    console.log("Микрорайон обновлен, ID:", id);
+    connection.release();
+    res.json({ id: parseInt(id), name, parentRaionId, isRaion: false });
+  } catch (error) {
+    console.error("Ошибка обновления микрорайона:", error.message);
+    res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
+  }
+});
+
+
+
+// Удаление района
+app.delete("/api/raions/:id", authenticate, async (req, res) => {
+  if (req.user.role !== "SUPER_ADMIN") {
+    console.error("Доступ запрещен: Требуется роль SUPER_ADMIN");
+    return res.status(403).json({ error: "Доступ запрещен: Требуется роль SUPER_ADMIN" });
+  }
+
+  const { id } = req.params;
+
+  try {
+    const connection = await pool.getConnection();
+    const [result] = await connection.execute("DELETE FROM districts WHERE id = ?", [id]);
+    if (result.affectedRows === 0) {
+      connection.release();
+      return res.status(404).json({ error: "Район не найден" });
+    }
+    console.log("Район удален, ID:", id);
+    connection.release();
+    res.json({ message: "Район успешно удален" });
+  } catch (error) {
+    console.error("Ошибка удаления района:", error.message);
+    res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
+  }
+});
+
+// Удаление микрорайона
+app.delete("/api/subraions/:id", authenticate, async (req, res) => {
+  if (req.user.role !== "SUPER_ADMIN") {
+    console.error("Доступ запрещен: Требуется роль SUPER_ADMIN");
+    return res.status(403).json({ error: "Доступ запрещен: Требуется роль SUPER_ADMIN" });
+  }
+
+  const { id } = req.params;
+
+  try {
+    const connection = await pool.getConnection();
+    const [result] = await connection.execute("DELETE FROM subdistricts WHERE id = ?", [id]);
+    if (result.affectedRows === 0) {
+      connection.release();
+      return res.status(404).json({ error: "Микрорайон не найден" });
+    }
+    console.log("Микрорайон удален, ID:", id);
+    connection.release();
+    res.json({ message: "Микрорайон успешно удален" });
+  } catch (error) {
+    console.error("Ошибка удаления микрорайона:", error.message);
+    res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
+  }
+});
+
 // Эндпоинт для перенаправления объектов недвижимости (защищено, только SUPER_ADMIN)
 app.patch("/api/properties/redirect", authenticate, async (req, res) => {
   if (req.user.role !== "SUPER_ADMIN") {
