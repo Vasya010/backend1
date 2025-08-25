@@ -44,8 +44,12 @@ const bucketName = process.env.S3_BUCKET || "a2c31109-3cf2c97b-aca1-42b0-a822-3e
 
 // Middleware
 const corsOptions = {
-  origin: [publicDomain, "http://localhost:3000"],
-  methods: ["GET", "POST", "PUT", "PATCH", "DELETE"],
+  origin: [
+    publicDomain, // https://vasya010-backend1-10db.twc1.net
+    "http://localhost:3000",
+    "https://alatooned.ru" // Добавьте ваш фронтенд-домен
+  ],
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"], // Добавьте OPTIONS для preflight-запросов
   allowedHeaders: ["Content-Type", "Authorization"],
   credentials: true,
 };
