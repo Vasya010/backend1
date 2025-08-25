@@ -10,7 +10,7 @@ const path = require("path");
 const app = express();
 const port = 5000;
 const publicDomain = "https://vasya010-backend1-10db.twc1.net";
-const jwtSecret = "your_jwt_secret_123";
+const jwtSecret = "your_jwt_secret_123"; // Рекомендуется хранить в .env
 
 // Конфигурация S3
 const s3Client = new S3Client({
@@ -46,6 +46,17 @@ const upload = multer({
   },
 });
 
+// Конфигурация пула соединений MySQL
+const dbConfig = {
+  host: "vh452.timeweb.ru",
+  user: "cs51703_kgadmin",
+  password: "Vasya11091109",
+  database: "cs51703_kgadmin",
+  port: 3306,
+  connectionLimit: 10, // Лимит соединений в пуле
+};
+const pool = mysql.createPool(dbConfig);
+
 // Middleware для аутентификации JWT
 const authenticate = async (req, res, next) => {
   const token = req.headers.authorization?.split(" ")[1];
@@ -58,9 +69,9 @@ const authenticate = async (req, res, next) => {
     console.log("Токен успешно проверен:", decoded);
 
     // Проверяем токен в базе данных
-    const connection = await mysql.createConnection(dbConfig);
+    const connection = await pool.getConnection();
     const [users] = await connection.execute("SELECT id, role FROM users1 WHERE id = ? AND token = ?", [decoded.id, token]);
-    await connection.end();
+    connection.release();
 
     if (users.length === 0) {
       console.error("Ошибка аутентификации: токен не найден в базе данных");
@@ -70,24 +81,15 @@ const authenticate = async (req, res, next) => {
     req.user = decoded;
     next();
   } catch (error) {
-    console.error("Ошибка аутентификации: неверный токен", error.message);
+    console.error("Ошибка аутентификации:", error.message);
     res.status(401).json({ error: "Неверный токен" });
   }
-};
-
-// Конфигурация подключения к БД
-const dbConfig = {
-  host: "vh452.timeweb.ru",
-  user: "cs51703_kgadmin",
-  password: "Vasya11091109",
-  database: "cs51703_kgadmin",
-  port: 3306,
 };
 
 // Тестирование подключения к БД и создание/обновление админа
 async function testDatabaseConnection() {
   try {
-    const connection = await mysql.createConnection(dbConfig);
+    const connection = await pool.getConnection();
     console.log("Подключение к базе данных успешно установлено!");
 
     // Создание таблицы users1, если не существует
@@ -100,7 +102,7 @@ async function testDatabaseConnection() {
           first_name VARCHAR(255) NOT NULL,
           last_name VARCHAR(255) NOT NULL,
           role VARCHAR(50) NOT NULL,
-          email VARCHAR(255) NOT NULL,
+          email VARCHAR(255) NOT NULL UNIQUE,
           phone VARCHAR(255) NOT NULL,
           profile_picture VARCHAR(255) DEFAULT NULL,
           password VARCHAR(255) NOT NULL,
@@ -113,6 +115,12 @@ async function testDatabaseConnection() {
       if (columns.length === 0) {
         console.log("Столбец token не существует, добавляем...");
         await connection.execute("ALTER TABLE users1 ADD token TEXT DEFAULT NULL");
+      }
+      // Проверяем, есть ли уникальный индекс на email
+      const [indexes] = await connection.execute("SHOW INDEX FROM users1 WHERE Column_name = 'email' AND Non_unique = 0");
+      if (indexes.length === 0) {
+        console.log("Уникальный индекс для email не существует, добавляем...");
+        await connection.execute("ALTER TABLE users1 ADD UNIQUE (email)");
       }
     }
 
@@ -168,14 +176,14 @@ async function testDatabaseConnection() {
 
     if (existingAdmin.length === 0) {
       console.log("Администратор не существует, создаём...");
-      const token = jwt.sign({ id: 1, role: "SUPER_ADMIN" }, jwtSecret, { expiresIn: "1h" });
+      const token = jwt.sign({ id: 1, role: "SUPER_ADMIN" }, jwtSecret, { expiresIn: "30d" });
       await connection.execute(
         "INSERT INTO users1 (first_name, last_name, email, phone, role, password, token) VALUES (?, ?, ?, ?, ?, ?, ?)",
         ["Admin", "User", adminEmail, "123456789", "SUPER_ADMIN", hashedPassword, token]
       );
     } else {
       console.log("Администратор существует, обновляем пароль и токен...");
-      const token = jwt.sign({ id: existingAdmin[0].id, role: "SUPER_ADMIN" }, jwtSecret, { expiresIn: "1h" });
+      const token = jwt.sign({ id: existingAdmin[0].id, role: "SUPER_ADMIN" }, jwtSecret, { expiresIn: "30d" });
       await connection.execute(
         "UPDATE users1 SET password = ?, token = ? WHERE email = ?",
         [hashedPassword, token, adminEmail]
@@ -194,7 +202,7 @@ async function testDatabaseConnection() {
       const [tablesList] = await connection.execute("SHOW TABLES");
       console.log("Таблицы в базе данных:", tablesList.map((t) => t[`Tables_in_${dbConfig.database}`]));
     }
-    await connection.end();
+    connection.release();
   } catch (error) {
     console.error("Ошибка подключения к базе данных:", error.message);
     if (error.code === "ECONNREFUSED") {
@@ -221,7 +229,7 @@ app.post("/api/admin/login", async (req, res) => {
   }
 
   try {
-    const connection = await mysql.createConnection(dbConfig);
+    const connection = await pool.getConnection();
     const [rows] = await connection.execute(
       "SELECT id, first_name, last_name, email, phone, role, password, profile_picture AS photoUrl, token FROM users1 WHERE email = ?",
       [email]
@@ -229,14 +237,14 @@ app.post("/api/admin/login", async (req, res) => {
     console.log("Результат запроса к БД:", rows.length > 0 ? "Пользователь найден" : "Пользователь не найден");
 
     if (rows.length === 0) {
-      await connection.end();
+      connection.release();
       return res.status(401).json({ error: "Неверный email или пользователь не найден" });
     }
 
     const user = rows[0];
     if (!user.password) {
       console.error("Ошибка: пароль пользователя не установлен");
-      await connection.end();
+      connection.release();
       return res.status(500).json({ error: "Пароль пользователя не установлен" });
     }
 
@@ -245,12 +253,12 @@ app.post("/api/admin/login", async (req, res) => {
     console.log("Результат сравнения пароля:", isPasswordValid);
 
     if (!isPasswordValid) {
-      await connection.end();
+      connection.release();
       return res.status(401).json({ error: "Неверный пароль" });
     }
 
-    // Генерируем новый токен и сохраняем его в базе данных
-    const token = jwt.sign({ id: user.id, role: user.role }, jwtSecret, { expiresIn: "1h" });
+    // Генерируем новый токен с длительным сроком действия
+    const token = jwt.sign({ id: user.id, role: user.role }, jwtSecret, { expiresIn: "30d" });
     await connection.execute("UPDATE users1 SET token = ? WHERE id = ?", [token, user.id]);
 
     const userResponse = {
@@ -266,7 +274,7 @@ app.post("/api/admin/login", async (req, res) => {
     };
 
     console.log("Логин успешен, токен сгенерирован и сохранён");
-    await connection.end();
+    connection.release();
     res.json({ message: "Авторизация успешна", user: userResponse, token });
   } catch (error) {
     console.error("Ошибка при авторизации:", error.message);
@@ -274,15 +282,29 @@ app.post("/api/admin/login", async (req, res) => {
   }
 });
 
+// Эндпоинт для выхода из аккаунта
+app.post("/api/logout", authenticate, async (req, res) => {
+  try {
+    const connection = await pool.getConnection();
+    await connection.execute("UPDATE users1 SET token = NULL WHERE id = ?", [req.user.id]);
+    connection.release();
+    console.log("Выход из аккаунта успешен, токен аннулирован для пользователя ID:", req.user.id);
+    res.json({ message: "Выход из аккаунта успешен" });
+  } catch (error) {
+    console.error("Ошибка при выходе из аккаунта:", error.message);
+    res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
+  }
+});
+
 // Получение всех пользователей (защищённый)
 app.get("/api/users", authenticate, async (req, res) => {
   try {
-    const connection = await mysql.createConnection(dbConfig);
+    const connection = await pool.getConnection();
     const [rows] = await connection.execute(
       "SELECT id, first_name, last_name, email, phone, role, profile_picture AS photoUrl FROM users1"
     );
     console.log("Пользователи получены из БД:", rows.length);
-    await connection.end();
+    connection.release();
     res.json(
       rows.map((user) => ({
         ...user,
@@ -313,7 +335,7 @@ app.post("/api/users", authenticate, upload.single("photo"), async (req, res) =>
     return res.status(400).json({ error: "Все поля, включая пароль, обязательны" });
   }
 
-  if (typeof password !== 'string') {
+  if (typeof password !== "string") {
     console.error("Ошибка: пароль должен быть строкой", { password, type: typeof password });
     return res.status(400).json({ error: "Пароль должен быть строкой" });
   }
@@ -323,6 +345,16 @@ app.post("/api/users", authenticate, upload.single("photo"), async (req, res) =>
   const profile_picture = photo ? `${uniqueSuffix}${path.extname(photo.originalname)}` : null;
 
   try {
+    const connection = await pool.getConnection();
+
+    // Проверка уникальности email
+    const [existingUser] = await connection.execute("SELECT id FROM users1 WHERE email = ?", [email]);
+    if (existingUser.length > 0) {
+      connection.release();
+      console.error("Ошибка: email уже существует", { email });
+      return res.status(400).json({ error: "Пользователь с таким email уже существует" });
+    }
+
     if (photo) {
       const uploadParams = {
         Bucket: bucketName,
@@ -334,17 +366,16 @@ app.post("/api/users", authenticate, upload.single("photo"), async (req, res) =>
       console.log(`Фото загружено в S3: ${profile_picture}`);
     }
 
-    const connection = await mysql.createConnection(dbConfig);
     const hashedPassword = await bcrypt.hash(password, 10);
     console.log("Хеш пароля для нового пользователя:", hashedPassword);
 
-    // Генерируем токен для нового пользователя
+    // Создание пользователя и генерация токена
     const [result] = await connection.execute(
       "INSERT INTO users1 (first_name, last_name, email, phone, role, password, profile_picture) VALUES (?, ?, ?, ?, ?, ?, ?)",
       [first_name, last_name, email, phone, role, hashedPassword, profile_picture]
     );
     const userId = result.insertId;
-    const token = jwt.sign({ id: userId, role }, jwtSecret, { expiresIn: "1h" });
+    const token = jwt.sign({ id: userId, role }, jwtSecret, { expiresIn: "30d" });
     await connection.execute("UPDATE users1 SET token = ? WHERE id = ?", [token, userId]);
     console.log("Новый пользователь создан, ID:", userId, "Токен сохранён:", token);
 
@@ -360,7 +391,7 @@ app.post("/api/users", authenticate, upload.single("photo"), async (req, res) =>
       token,
     };
 
-    await connection.end();
+    connection.release();
     res.json(newUser);
   } catch (error) {
     console.error("Ошибка создания пользователя:", error.message);
@@ -391,12 +422,20 @@ app.put("/api/users/:id", authenticate, upload.single("photo"), async (req, res)
   let profile_picture = null;
 
   try {
-    const connection = await mysql.createConnection(dbConfig);
+    const connection = await pool.getConnection();
     const [existingUsers] = await connection.execute("SELECT profile_picture FROM users1 WHERE id = ?", [id]);
     if (existingUsers.length === 0) {
-      await connection.end();
+      connection.release();
       console.error("Пользователь не найден по ID:", id);
       return res.status(404).json({ error: "Пользователь не найден" });
+    }
+
+    // Проверка уникальности email (кроме текущего пользователя)
+    const [emailCheck] = await connection.execute("SELECT id FROM users1 WHERE email = ? AND id != ?", [email, id]);
+    if (emailCheck.length > 0) {
+      connection.release();
+      console.error("Ошибка: email уже существует", { email });
+      return res.status(400).json({ error: "Пользователь с таким email уже существует" });
     }
 
     const existingPhoto = existingUsers[0].profile_picture;
@@ -425,7 +464,7 @@ app.put("/api/users/:id", authenticate, upload.single("photo"), async (req, res)
     );
 
     if (result.affectedRows === 0) {
-      await connection.end();
+      connection.release();
       return res.status(404).json({ error: "Пользователь не найден" });
     }
     console.log("Пользователь обновлён, ID:", id);
@@ -441,7 +480,7 @@ app.put("/api/users/:id", authenticate, upload.single("photo"), async (req, res)
       name: `${first_name} ${last_name}`.trim(),
     };
 
-    await connection.end();
+    connection.release();
     res.json(updatedUser);
   } catch (error) {
     console.error("Ошибка обновления пользователя:", error.message);
@@ -459,10 +498,10 @@ app.delete("/api/users/:id", authenticate, async (req, res) => {
   const { id } = req.params;
 
   try {
-    const connection = await mysql.createConnection(dbConfig);
+    const connection = await pool.getConnection();
     const [users] = await connection.execute("SELECT profile_picture FROM users1 WHERE id = ?", [id]);
     if (users.length === 0) {
-      await connection.end();
+      connection.release();
       console.error("Пользователь не найден по ID:", id);
       return res.status(404).json({ error: "Пользователь не найден" });
     }
@@ -475,12 +514,12 @@ app.delete("/api/users/:id", authenticate, async (req, res) => {
 
     const [result] = await connection.execute("DELETE FROM users1 WHERE id = ?", [id]);
     if (result.affectedRows === 0) {
-      await connection.end();
+      connection.release();
       return res.status(404).json({ error: "Пользователь не найден" });
     }
     console.log("Пользователь удалён, ID:", id);
 
-    await connection.end();
+    connection.release();
     res.json({ message: "Пользователь успешно удален" });
   } catch (error) {
     console.error("Ошибка удаления пользователя:", error.message);
@@ -516,7 +555,14 @@ app.post("/api/properties", authenticate, upload.fields([
     return res.status(400).json({ error: "Все обязательные поля (type_id, price, rukprice, mkv, address, etaj, etajnost) должны быть заполнены" });
   }
 
+  // Валидация числовых полей
+  if (isNaN(parseFloat(price)) || isNaN(parseFloat(rukprice)) || isNaN(parseFloat(mkv)) || isNaN(parseInt(etaj)) || isNaN(parseInt(etajnost))) {
+    console.error("Ошибка: числовые поля некорректны", { price, rukprice, mkv, etaj, etajnost });
+    return res.status(400).json({ error: "Поля price, rukprice, mkv, etaj, etajnost должны быть числовыми" });
+  }
+
   // Проверка curator_ids для REALTOR
+  let finalCuratorIds = curator_ids || (req.user.role === "REALTOR" ? req.user.id.toString() : null);
   if (req.user.role === "REALTOR" && curator_ids && curator_ids !== req.user.id.toString()) {
     console.error("Ошибка: риелтор может указывать только себя в качестве куратора", { curator_ids, userId: req.user.id });
     return res.status(403).json({ error: "Риелтор может указывать только себя в качестве куратора" });
@@ -547,7 +593,10 @@ app.post("/api/properties", authenticate, upload.fields([
       console.log(`Документ загружен в S3: ${document.filename}`);
     }
 
-    const connection = await mysql.createConnection(dbConfig);
+    const connection = await pool.getConnection();
+    const photosJson = JSON.stringify(photos.map(img => img.filename)); // Гарантируем валидный JSON
+    console.log("Сохраняем photos в базе:", photosJson);
+
     const [result] = await connection.execute(
       `INSERT INTO properties (
         type_id, \`condition\`, series, zhk_id, document_id, owner_name, curator_ids, price, unit, rukprice, mkv, room, phone, 
@@ -560,7 +609,7 @@ app.post("/api/properties", authenticate, upload.fields([
         zhk_id || null,
         0, // document_id пока фиксировано, замените на динамическое значение, если требуется
         owner_name || null,
-        curator_ids || (req.user.role === "REALTOR" ? req.user.id : null),
+        finalCuratorIds,
         price,
         unit || null,
         rukprice,
@@ -574,7 +623,7 @@ app.post("/api/properties", authenticate, upload.fields([
         description || null,
         null, // latitude
         null, // longitude
-        JSON.stringify(photos.map(img => img.filename)),
+        photosJson,
         document ? document.filename : null,
         status || null,
         owner_id || null,
@@ -592,7 +641,7 @@ app.post("/api/properties", authenticate, upload.fields([
       zhk_id,
       document_id: 0,
       owner_name,
-      curator_ids: curator_ids || (req.user.role === "REALTOR" ? req.user.id : null),
+      curator_ids: finalCuratorIds,
       price,
       unit,
       rukprice,
@@ -614,7 +663,7 @@ app.post("/api/properties", authenticate, upload.fields([
       time: new Date().toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }),
     };
 
-    await connection.end();
+    connection.release();
     res.json(newProperty);
   } catch (error) {
     console.error("Ошибка создания записи в properties:", error.message);
@@ -632,17 +681,27 @@ app.delete("/api/properties/:id", authenticate, async (req, res) => {
   const { id } = req.params;
 
   try {
-    const connection = await mysql.createConnection(dbConfig);
+    const connection = await pool.getConnection();
     const [properties] = await connection.execute("SELECT photos, document FROM properties WHERE id = ?", [id]);
     if (properties.length === 0) {
-      await connection.end();
+      connection.release();
       console.error("Запись не найдена по ID:", id);
       return res.status(404).json({ error: "Запись не найдена" });
     }
 
     const { photos, document } = properties[0];
     if (photos) {
-      const photoFiles = JSON.parse(photos);
+      let photoFiles = [];
+      try {
+        photoFiles = JSON.parse(photos);
+        if (!Array.isArray(photoFiles)) {
+          console.warn("Поле photos не является массивом:", photos);
+          photoFiles = [];
+        }
+      } catch (error) {
+        console.error("Ошибка парсинга photos:", error.message, "Данные:", photos);
+        photoFiles = [];
+      }
       for (const img of photoFiles) {
         await s3Client.send(new DeleteObjectCommand({ Bucket: bucketName, Key: img }));
         console.log(`Изображение удалено из S3: ${img}`);
@@ -655,12 +714,12 @@ app.delete("/api/properties/:id", authenticate, async (req, res) => {
 
     const [result] = await connection.execute("DELETE FROM properties WHERE id = ?", [id]);
     if (result.affectedRows === 0) {
-      await connection.end();
+      connection.release();
       return res.status(404).json({ error: "Запись не найдена" });
     }
     console.log("Запись удалена, ID:", id);
 
-    await connection.end();
+    connection.release();
     res.json({ message: "Запись успешно удалена" });
   } catch (error) {
     console.error("Ошибка удаления записи:", error.message);
@@ -671,7 +730,7 @@ app.delete("/api/properties/:id", authenticate, async (req, res) => {
 // Получение всех записей из properties (защищённый)
 app.get("/api/properties", authenticate, async (req, res) => {
   try {
-    const connection = await mysql.createConnection(dbConfig);
+    const connection = await pool.getConnection();
     const [rows] = await connection.execute(
       `SELECT id, type_id, \`condition\`, series, zhk_id, document_id, owner_name, curator_ids, price, unit, rukprice, mkv, room, phone, 
        district_id, subdistrict_id, address, notes, description, latitude, longitude, created_at, photos, document, status, owner_id, etaj, etajnost 
@@ -679,15 +738,29 @@ app.get("/api/properties", authenticate, async (req, res) => {
     );
     console.log("Записи получены из properties:", rows.length);
 
-    const properties = rows.map((row) => ({
-      ...row,
-      photos: row.photos ? JSON.parse(row.photos).map((img) => `https://s3.twcstorage.ru/${bucketName}/${img}`) : [],
-      document: row.document ? `https://s3.twcstorage.ru/${bucketName}/${row.document}` : null,
-      date: new Date(row.created_at).toLocaleDateString('ru-RU'),
-      time: new Date(row.created_at).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }),
-    }));
+    const properties = rows.map((row) => {
+      let parsedPhotos = [];
+      try {
+        parsedPhotos = row.photos ? JSON.parse(row.photos) : [];
+        if (!Array.isArray(parsedPhotos)) {
+          console.warn("Поле photos не является массивом для ID:", row.id, "Данные:", row.photos);
+          parsedPhotos = [];
+        }
+      } catch (error) {
+        console.error("Ошибка парсинга photos для ID:", row.id, "Ошибка:", error.message, "Данные:", row.photos);
+        parsedPhotos = [];
+      }
 
-    await connection.end();
+      return {
+        ...row,
+        photos: parsedPhotos.map((img) => `https://s3.twcstorage.ru/${bucketName}/${img}`),
+        document: row.document ? `https://s3.twcstorage.ru/${bucketName}/${row.document}` : null,
+        date: new Date(row.created_at).toLocaleDateString('ru-RU'),
+        time: new Date(row.created_at).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }),
+      };
+    });
+
+    connection.release();
     res.json(properties);
   } catch (error) {
     console.error("Ошибка получения записей:", error.message);
@@ -698,7 +771,7 @@ app.get("/api/properties", authenticate, async (req, res) => {
 // Получение всех объявлений для AdminDashboard (защищённый)
 app.get("/api/listings", authenticate, async (req, res) => {
   try {
-    const connection = await mysql.createConnection(dbConfig);
+    const connection = await pool.getConnection();
     const [rows] = await connection.execute(
       "SELECT id, type_id, price, rukprice, mkv, status, address, created_at FROM properties"
     );
@@ -714,7 +787,7 @@ app.get("/api/listings", authenticate, async (req, res) => {
       status: row.status,
     }));
 
-    await connection.end();
+    connection.release();
     res.json(listings);
   } catch (error) {
     console.error("Ошибка получения объявлений:", error.message);
