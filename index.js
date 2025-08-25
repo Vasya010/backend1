@@ -1012,7 +1012,7 @@ app.get("/api/listings", authenticate, async (req, res) => {
   }
 });
 
-// Start server
+// Start server1
 app.listen(port, () => {
   console.log(`Server running on http://localhost:${port}`);
   console.log(`Public access: ${publicDomain}:${port}`);
