@@ -6,12 +6,28 @@ const jwt = require("jsonwebtoken");
 const multer = require("multer");
 const { S3Client, PutObjectCommand, DeleteObjectCommand } = require("@aws-sdk/client-s3");
 const path = require("path");
+const Joi = require("joi");
+const winston = require("winston");
 require("dotenv").config();
 
 const app = express();
 const port = process.env.PORT || 5000;
 const publicDomain = process.env.PUBLIC_DOMAIN || "https://vasya010-backend1-10db.twc1.net";
 const jwtSecret = process.env.JWT_SECRET || "your_jwt_secret_123";
+
+// Настройка логирования с winston
+const logger = winston.createLogger({
+  level: "info",
+  format: winston.format.combine(
+    winston.format.timestamp(),
+    winston.format.json()
+  ),
+  transports: [
+    new winston.transports.File({ filename: "error.log", level: "error" }),
+    new winston.transports.File({ filename: "combined.log" }),
+    new winston.transports.Console(),
+  ],
+});
 
 // Конфигурация S3
 const s3Client = new S3Client({
@@ -27,13 +43,25 @@ const s3Client = new S3Client({
 const bucketName = process.env.S3_BUCKET || "a2c31109-3cf2c97b-aca1-42b0-a822-3e0ade279447";
 
 // Middleware
-app.use(cors());
+const corsOptions = {
+  origin: [publicDomain, "http://localhost:3000"],
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE"],
+  allowedHeaders: ["Content-Type", "Authorization"],
+  credentials: true,
+};
+app.use(cors(corsOptions));
 app.use(express.json());
 
 // Глобальный обработчик ошибок
 app.use((err, req, res, next) => {
-  console.error("Глобальная ошибка:", err.message);
-  res.status(500).json({ error: `Внутренняя ошибка сервера: ${err.message}` });
+  if (err instanceof multer.MulterError) {
+    logger.error(`Ошибка Multer: ${err.message}`);
+    return res.status(400).json({ error: `Ошибка загрузки файла: ${err.message}` });
+  } else if (err) {
+    logger.error(`Глобальная ошибка: ${err.message}`);
+    return res.status(500).json({ error: `Внутренняя ошибка сервера: ${err.message}` });
+  }
+  next();
 });
 
 // Конфигурация Multer
@@ -45,10 +73,10 @@ const upload = multer({
     const extname = filetypes.test(path.extname(file.originalname).toLowerCase());
     const mimetype = filetypes.test(file.mimetype);
     if (extname && mimetype) {
-      console.log(`Файл ${file.originalname} принят для загрузки`);
+      logger.info(`Файл ${file.originalname} принят для загрузки`);
       return cb(null, true);
     }
-    console.error(`Файл ${file.originalname} отклонен: недопустимый тип`);
+    logger.error(`Файл ${file.originalname} отклонен: недопустимый тип`);
     cb(new Error("Разрешены только изображения (jpeg, jpg, png) и документы (pdf, doc, docx)"));
   },
   limits: {
@@ -67,30 +95,66 @@ const dbConfig = {
 };
 const pool = mysql.createPool(dbConfig);
 
+// Схемы валидации Joi
+const userSchema = Joi.object({
+  email: Joi.string().email().required(),
+  name: Joi.string().min(1).required(),
+  phone: Joi.string().min(5).required(),
+  role: Joi.string().valid("SUPER_ADMIN", "REALTOR").required(),
+  password: Joi.string().min(6).required(),
+});
+
+const propertySchema = Joi.object({
+  type_id: Joi.string().required(),
+  price: Joi.number().positive().required(),
+  rukprice: Joi.number().positive().required(),
+  mkv: Joi.number().positive().required(),
+  address: Joi.string().min(1).required(),
+  etaj: Joi.number().integer().positive().required(),
+  etajnost: Joi.number().integer().positive().required(),
+  condition: Joi.string().optional().allow(null),
+  series: Joi.string().optional().allow(null),
+  zhk_id: Joi.string().optional().allow(null),
+  owner_name: Joi.string().optional().allow(null),
+  curator_ids: Joi.string().optional().allow(null),
+  unit: Joi.string().optional().allow(null),
+  room: Joi.string().optional().allow(null),
+  phone: Joi.string().optional().allow(null),
+  district_id: Joi.string().optional().allow(null),
+  subdistrict_id: Joi.string().optional().allow(null),
+  notes: Joi.string().optional().allow(null),
+  description: Joi.string().optional().allow(null),
+  status: Joi.string().optional().allow(null),
+  owner_id: Joi.number().integer().optional().allow(null),
+});
+
 // Middleware для аутентификации JWT
 const authenticate = async (req, res, next) => {
   const token = req.headers.authorization?.split(" ")[1];
   if (!token) {
-    console.error("Ошибка аутентификации: Токен отсутствует");
+    logger.error("Ошибка аутентификации: Токен отсутствует");
     return res.status(401).json({ error: "Токен отсутствует" });
   }
   try {
     const decoded = jwt.verify(token, jwtSecret);
-    console.log("Токен проверен:", decoded);
+    logger.info("Токен проверен:", decoded);
 
     const connection = await pool.getConnection();
     const [users] = await connection.execute("SELECT id, role FROM users1 WHERE id = ? AND token = ?", [decoded.id, token]);
     connection.release();
 
     if (users.length === 0) {
-      console.error("Ошибка аутентификации: Токен не найден в базе данных");
+      logger.error("Ошибка аутентификации: Токен не найден в базе данных");
       return res.status(401).json({ error: "Недействительный токен" });
     }
 
     req.user = decoded;
     next();
   } catch (error) {
-    console.error("Ошибка аутентификации:", error.message);
+    logger.error("Ошибка аутентификации:", error.message);
+    if (error.name === "TokenExpiredError") {
+      return res.status(401).json({ error: "Срок действия токена истек. Пожалуйста, войдите снова." });
+    }
     res.status(401).json({ error: "Недействительный токен" });
   }
 };
@@ -99,12 +163,12 @@ const authenticate = async (req, res, next) => {
 async function testDatabaseConnection() {
   try {
     const connection = await pool.getConnection();
-    console.log("Подключение к базе данных успешно установлено!");
+    logger.info("Подключение к базе данных успешно установлено!");
 
-    // Создание таблицы users1, если она не существует
+    // Создание таблицы users1
     const [tables] = await connection.execute("SHOW TABLES LIKE 'users1'");
     if (tables.length === 0) {
-      console.log("Таблица users1 не существует, создается...");
+      logger.info("Таблица users1 не существует, создается...");
       await connection.execute(`
         CREATE TABLE users1 (
           id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
@@ -121,20 +185,20 @@ async function testDatabaseConnection() {
     } else {
       const [columns] = await connection.execute("SHOW COLUMNS FROM users1 LIKE 'token'");
       if (columns.length === 0) {
-        console.log("Столбец token не существует, добавляется...");
+        logger.info("Столбец token не существует, добавляется...");
         await connection.execute("ALTER TABLE users1 ADD token TEXT DEFAULT NULL");
       }
       const [indexes] = await connection.execute("SHOW INDEX FROM users1 WHERE Column_name = 'email' AND Non_unique = 0");
       if (indexes.length === 0) {
-        console.log("Уникальный индекс для email не существует, добавляется...");
+        logger.info("Уникальный индекс для email не существует, добавляется...");
         await connection.execute("ALTER TABLE users1 ADD UNIQUE (email)");
       }
     }
 
-    // Создание таблицы properties, если она не существует
+    // Создание таблицы properties
     const [propTables] = await connection.execute("SHOW TABLES LIKE 'properties'");
     if (propTables.length === 0) {
-      console.log("Таблица properties не существует, создается...");
+      logger.info("Таблица properties не существует, создается...");
       await connection.execute(`
         CREATE TABLE properties (
           id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
@@ -142,7 +206,7 @@ async function testDatabaseConnection() {
           \`condition\` VARCHAR(255) DEFAULT NULL,
           series VARCHAR(255) DEFAULT NULL,
           zhk_id VARCHAR(255) DEFAULT NULL,
-          document_id INT NOT NULL,
+          document_id INT DEFAULT NULL,
           owner_name VARCHAR(255) DEFAULT NULL,
           curator_ids TEXT DEFAULT NULL,
           price TEXT NOT NULL,
@@ -170,10 +234,29 @@ async function testDatabaseConnection() {
       `);
     }
 
-    // Создание таблицы jk, если она не существует
+    // Добавление индексов для таблицы properties
+    const [indexes] = await connection.execute("SHOW INDEX FROM properties WHERE Key_name = 'idx_district_id'");
+    if (indexes.length === 0) {
+      logger.info("Индекс для district_id не существует, создается...");
+      await connection.execute("CREATE INDEX idx_district_id ON properties (district_id)");
+    }
+
+    const [subdistrictIndexes] = await connection.execute("SHOW INDEX FROM properties WHERE Key_name = 'idx_subdistrict_id'");
+    if (subdistrictIndexes.length === 0) {
+      logger.info("Индекс для subdistrict_id не существует, создается...");
+      await connection.execute("CREATE INDEX idx_subdistrict_id ON properties (subdistrict_id)");
+    }
+
+    const [zhkIndexes] = await connection.execute("SHOW INDEX FROM properties WHERE Key_name = 'idx_zhk_id'");
+    if (zhkIndexes.length === 0) {
+      logger.info("Индекс для zhk_id не существует, создается...");
+      await connection.execute("CREATE INDEX idx_zhk_id ON properties (zhk_id)");
+    }
+
+    // Создание таблицы jk
     const [jkTables] = await connection.execute("SHOW TABLES LIKE 'jk'");
     if (jkTables.length === 0) {
-      console.log("Таблица jk не существует, создается...");
+      logger.info("Таблица jk не существует, создается...");
       await connection.execute(`
         CREATE TABLE jk (
           id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
@@ -185,10 +268,10 @@ async function testDatabaseConnection() {
       `);
     }
 
-    // Создание таблицы districts, если она не существует
+    // Создание таблицы districts
     const [districtTables] = await connection.execute("SHOW TABLES LIKE 'districts'");
     if (districtTables.length === 0) {
-      console.log("Таблица districts не существует, создается...");
+      logger.info("Таблица districts не существует, создается...");
       await connection.execute(`
         CREATE TABLE districts (
           id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
@@ -198,10 +281,10 @@ async function testDatabaseConnection() {
       `);
     }
 
-    // Создание таблицы subdistricts, если она не существует
+    // Создание таблицы subdistricts
     const [subdistrictTables] = await connection.execute("SHOW TABLES LIKE 'subdistricts'");
     if (subdistrictTables.length === 0) {
-      console.log("Таблица subdistricts не существует, создается...");
+      logger.info("Таблица subdistricts не существует, создается...");
       await connection.execute(`
         CREATE TABLE subdistricts (
           id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
@@ -217,39 +300,36 @@ async function testDatabaseConnection() {
     const adminEmail = process.env.ADMIN_EMAIL || "admin@example.com";
     const adminPassword = process.env.ADMIN_PASSWORD || "admin123";
     const hashedPassword = await bcrypt.hash(adminPassword, 10);
-    console.log("Хэшированный пароль администратора:", hashedPassword);
+    logger.info("Хэшированный пароль администратора:", hashedPassword);
 
     const [existingAdmin] = await connection.execute("SELECT id FROM users1 WHERE email = ?", [adminEmail]);
 
     if (existingAdmin.length === 0) {
-      console.log("Администратор не существует, создается...");
+      logger.info("Администратор не существует, создается...");
       const token = jwt.sign({ id: 1, role: "SUPER_ADMIN" }, jwtSecret, { expiresIn: "30d" });
       await connection.execute(
         "INSERT INTO users1 (first_name, last_name, email, phone, role, password, token) VALUES (?, ?, ?, ?, ?, ?, ?)",
         ["Админ", "Пользователь", adminEmail, "123456789", "SUPER_ADMIN", hashedPassword, token]
       );
     } else {
-      console.log("Администратор существует, обновление пароля и токена...");
+      logger.info("Администратор существует, обновление пароля и токена...");
       const token = jwt.sign({ id: existingAdmin[0].id, role: "SUPER_ADMIN" }, jwtSecret, { expiresIn: "30d" });
       await connection.execute("UPDATE users1 SET password = ?, token = ? WHERE email = ?", [hashedPassword, token, adminEmail]);
     }
 
-    console.log("Данные для входа администратора:");
-    console.log(`Email: ${adminEmail}`);
-    console.log(`Пароль: ${adminPassword}`);
-    console.log("Роль: SUPER_ADMIN");
+    logger.info("Данные для входа администратора:", { email: adminEmail, password: adminPassword, role: "SUPER_ADMIN" });
 
     const [rows] = await connection.execute("SELECT 1 AS test");
     if (rows.length > 0) {
-      console.log("База данных функционирует корректно!");
+      logger.info("База данных функционирует корректно!");
       const [tablesList] = await connection.execute("SHOW TABLES");
-      console.log("Таблицы в базе данных:", tablesList.map((t) => t[`Tables_in_${dbConfig.database}`]));
+      logger.info("Таблицы в базе данных:", tablesList.map((t) => t[`Tables_in_${dbConfig.database}`]));
     }
     connection.release();
   } catch (error) {
-    console.error("Ошибка подключения к базе данных:", error.message);
+    logger.error("Ошибка подключения к базе данных:", error.message);
     if (error.code === "ECONNREFUSED") {
-      console.error("Сервер MySQL не запущен или неверный хост/порт.");
+      logger.error("Сервер MySQL не запущен или неверный хост/порт.");
     }
   }
 }
@@ -258,16 +338,17 @@ testDatabaseConnection();
 
 // Тестовый эндпоинт
 app.get("/api/message", (req, res) => {
+  logger.info("Тестовый эндпоинт вызван");
   res.json({ message: "Привет от бэкенда Ala-Too!" });
 });
 
 // Эндпоинт для входа администратора
 app.post("/api/admin/login", async (req, res) => {
   const { email, password } = req.body;
-  console.log("Попытка входа:", { email });
+  logger.info("Попытка входа:", { email });
 
   if (!email || !password) {
-    console.error("Ошибка: Отсутствует email или пароль");
+    logger.error("Ошибка: Отсутствует email или пароль");
     return res.status(400).json({ error: "Email и пароль обязательны" });
   }
 
@@ -277,7 +358,7 @@ app.post("/api/admin/login", async (req, res) => {
       "SELECT id, first_name, last_name, email, phone, role, password, profile_picture AS photoUrl, token FROM users1 WHERE email = ?",
       [email]
     );
-    console.log("Результат запроса к базе данных:", rows.length > 0 ? "Пользователь найден" : "Пользователь не найден");
+    logger.info("Результат запроса к базе данных:", rows.length > 0 ? "Пользователь найден" : "Пользователь не найден");
 
     if (rows.length === 0) {
       connection.release();
@@ -286,14 +367,14 @@ app.post("/api/admin/login", async (req, res) => {
 
     const user = rows[0];
     if (!user.password) {
-      console.error("Ошибка: Пароль пользователя не установлен");
+      logger.error("Ошибка: Пароль пользователя не установлен");
       connection.release();
       return res.status(500).json({ error: "Пароль пользователя не установлен" });
     }
 
-    console.log("Хэшированный пароль из базы данных:", user.password);
+    logger.info("Хэшированный пароль из базы данных:", user.password);
     const isPasswordValid = await bcrypt.compare(password, user.password);
-    console.log("Результат сравнения пароля:", isPasswordValid);
+    logger.info("Результат сравнения пароля:", isPasswordValid);
 
     if (!isPasswordValid) {
       connection.release();
@@ -315,11 +396,11 @@ app.post("/api/admin/login", async (req, res) => {
       token,
     };
 
-    console.log("Вход успешен, токен сгенерирован и сохранен");
+    logger.info("Вход успешен, токен сгенерирован и сохранен для пользователя ID:", user.id);
     connection.release();
     res.json({ message: "Авторизация успешна", user: userResponse, token });
   } catch (error) {
-    console.error("Ошибка входа:", error.message);
+    logger.error("Ошибка входа:", error.message);
     res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
   }
 });
@@ -330,10 +411,10 @@ app.post("/api/logout", authenticate, async (req, res) => {
     const connection = await pool.getConnection();
     await connection.execute("UPDATE users1 SET token = NULL WHERE id = ?", [req.user.id]);
     connection.release();
-    console.log("Выход успешен, токен аннулирован для пользователя ID:", req.user.id);
+    logger.info("Выход успешен, токен аннулирован для пользователя ID:", req.user.id);
     res.json({ message: "Выход успешен" });
   } catch (error) {
-    console.error("Ошибка выхода:", error.message);
+    logger.error("Ошибка выхода:", error.message);
     res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
   }
 });
@@ -341,26 +422,40 @@ app.post("/api/logout", authenticate, async (req, res) => {
 // Получение всех пользователей (защищено)
 app.get("/api/users", authenticate, async (req, res) => {
   if (req.user.role !== "SUPER_ADMIN") {
-    console.error("Доступ запрещен: Требуется роль SUPER_ADMIN");
+    logger.error("Доступ запрещен: Требуется роль SUPER_ADMIN");
     return res.status(403).json({ error: "Доступ запрещен: Требуется роль SUPER_ADMIN" });
   }
+
+  const page = parseInt(req.query.page) || 1;
+  const limit = parseInt(req.query.limit) || 10;
+  const offset = (page - 1) * limit;
 
   try {
     const connection = await pool.getConnection();
     const [rows] = await connection.execute(
-      "SELECT id, first_name, last_name, email, phone, role, profile_picture AS photoUrl FROM users1"
+      "SELECT id, first_name, last_name, email, phone, role, profile_picture AS photoUrl FROM users1 LIMIT ? OFFSET ?",
+      [limit, offset]
     );
-    console.log("Пользователи получены из базы данных:", rows.length);
+    const [totalRows] = await connection.execute("SELECT COUNT(*) as total FROM users1");
+    const total = totalRows[0].total;
+
+    logger.info(`Пользователи получены: ${rows.length}, страница: ${page}, лимит: ${limit}`);
     connection.release();
-    res.json(
-      rows.map((user) => ({
+    res.json({
+      data: rows.map((user) => ({
         ...user,
         name: `${user.first_name} ${user.last_name}`,
         photoUrl: user.photoUrl ? `https://s3.twcstorage.ru/${bucketName}/${user.photoUrl}` : null,
-      }))
-    );
+      })),
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit),
+      },
+    });
   } catch (error) {
-    console.error("Ошибка получения пользователей:", error.message);
+    logger.error("Ошибка получения пользователей:", error.message);
     res.status(500).json({ error: "Внутренняя ошибка сервера" });
   }
 });
@@ -368,36 +463,33 @@ app.get("/api/users", authenticate, async (req, res) => {
 // Создание нового пользователя (защищено, только SUPER_ADMIN)
 app.post("/api/users", authenticate, upload.single("photo"), async (req, res) => {
   if (req.user.role !== "SUPER_ADMIN") {
-    console.error("Доступ запрещен: Требуется роль SUPER_ADMIN");
+    logger.error("Доступ запрещен: Требуется роль SUPER_ADMIN");
     return res.status(403).json({ error: "Доступ запрещен: Требуется роль SUPER_ADMIN" });
   }
 
-  const { email, name, phone, role, password } = req.body;
+  const { error, value } = userSchema.validate(req.body);
+  if (error) {
+    logger.error("Ошибка валидации:", error.details);
+    return res.status(400).json({ error: error.details[0].message });
+  }
+
+  const { email, name, phone, role, password } = value;
   const photo = req.file;
 
-  console.log("Входные данные для создания пользователя:", { email, name, phone, role, hasPhoto: !!photo });
-
-  if (!email || !name || !phone || !role || !password) {
-    console.error("Ошибка: Не все поля предоставлены", { email, name, phone, role, password });
-    return res.status(400).json({ error: "Все поля, включая пароль, обязательны" });
-  }
-
-  if (typeof password !== "string") {
-    console.error("Ошибка: Пароль должен быть строкой", { password, type: typeof password });
-    return res.status(400).json({ error: "Пароль должен быть строкой" });
-  }
+  logger.info("Входные данные для создания пользователя:", { email, name, phone, role, hasPhoto: !!photo });
 
   const [first_name, last_name = ""] = name.split(" ");
   const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
   const profile_picture = photo ? `${uniqueSuffix}${path.extname(photo.originalname)}` : null;
 
+  const connection = await pool.getConnection();
   try {
-    const connection = await pool.getConnection();
+    await connection.beginTransaction();
 
     const [existingUser] = await connection.execute("SELECT id FROM users1 WHERE email = ?", [email]);
     if (existingUser.length > 0) {
       connection.release();
-      console.error("Ошибка: Email уже существует", { email });
+      logger.error("Ошибка: Email уже существует", { email });
       return res.status(400).json({ error: "Пользователь с таким email уже существует" });
     }
 
@@ -409,11 +501,11 @@ app.post("/api/users", authenticate, upload.single("photo"), async (req, res) =>
         ContentType: photo.mimetype,
       };
       await s3Client.send(new PutObjectCommand(uploadParams));
-      console.log(`Фото загружено в S3: ${profile_picture}`);
+      logger.info(`Фото загружено в S3: ${profile_picture}`);
     }
 
     const hashedPassword = await bcrypt.hash(password, 10);
-    console.log("Хэшированный пароль для нового пользователя:", hashedPassword);
+    logger.info("Хэшированный пароль для нового пользователя:", hashedPassword);
 
     const [result] = await connection.execute(
       "INSERT INTO users1 (first_name, last_name, email, phone, role, password, profile_picture) VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -422,7 +514,9 @@ app.post("/api/users", authenticate, upload.single("photo"), async (req, res) =>
     const userId = result.insertId;
     const token = jwt.sign({ id: userId, role }, jwtSecret, { expiresIn: "30d" });
     await connection.execute("UPDATE users1 SET token = ? WHERE id = ?", [token, userId]);
-    console.log("Создан новый пользователь, ID:", userId, "Токен сохранен:", token);
+
+    await connection.commit();
+    logger.info(`Создан новый пользователь: ID=${userId}, Email=${email}, Role=${role}`);
 
     const newUser = {
       id: userId,
@@ -439,46 +533,52 @@ app.post("/api/users", authenticate, upload.single("photo"), async (req, res) =>
     connection.release();
     res.json(newUser);
   } catch (error) {
-    console.error("Ошибка создания пользователя:", error.message);
+    await connection.rollback();
+    logger.error("Ошибка создания пользователя:", error.message);
     res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
+  } finally {
+    connection.release();
   }
 });
 
 // Обновление пользователя (защищено, только SUPER_ADMIN)
 app.put("/api/users/:id", authenticate, upload.single("photo"), async (req, res) => {
   if (req.user.role !== "SUPER_ADMIN") {
-    console.error("Доступ запрещен: Требуется роль SUPER_ADMIN");
+    logger.error("Доступ запрещен: Требуется роль SUPER_ADMIN");
     return res.status(403).json({ error: "Доступ запрещен: Требуется роль SUPER_ADMIN" });
   }
 
   const { id } = req.params;
-  const { email, name, phone, role } = req.body;
+  const { error, value } = userSchema.validate(req.body);
+  if (error) {
+    logger.error("Ошибка валидации:", error.details);
+    return res.status(400).json({ error: error.details[0].message });
+  }
+
+  const { email, name, phone, role } = value;
   const photo = req.file;
 
-  console.log("Входные данные для обновления пользователя:", { id, email, name, phone, role, hasPhoto: !!photo });
-
-  if (!email || !name || !phone || !role) {
-    console.error("Ошибка: Не все поля предоставлены");
-    return res.status(400).json({ error: "Все поля обязательны" });
-  }
+  logger.info("Входные данные для обновления пользователя:", { id, email, name, phone, role, hasPhoto: !!photo });
 
   const [first_name, last_name = ""] = name.split(" ");
   const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
   let profile_picture = null;
 
+  const connection = await pool.getConnection();
   try {
-    const connection = await pool.getConnection();
+    await connection.beginTransaction();
+
     const [existingUsers] = await connection.execute("SELECT profile_picture FROM users1 WHERE id = ?", [id]);
     if (existingUsers.length === 0) {
       connection.release();
-      console.error("Пользователь не найден по ID:", id);
+      logger.error("Пользователь не найден по ID:", id);
       return res.status(404).json({ error: "Пользователь не найден" });
     }
 
     const [emailCheck] = await connection.execute("SELECT id FROM users1 WHERE email = ? AND id != ?", [email, id]);
     if (emailCheck.length > 0) {
       connection.release();
-      console.error("Ошибка: Email уже существует", { email });
+      logger.error("Ошибка: Email уже существует", { email });
       return res.status(400).json({ error: "Пользователь с таким email уже существует" });
     }
 
@@ -494,11 +594,11 @@ app.put("/api/users/:id", authenticate, upload.single("photo"), async (req, res)
         ContentType: photo.mimetype,
       };
       await s3Client.send(new PutObjectCommand(uploadParams));
-      console.log(`Новое фото загружено в S3: ${profile_picture}`);
+      logger.info(`Новое фото загружено в S3: ${profile_picture}`);
 
       if (existingPhoto) {
         await s3Client.send(new DeleteObjectCommand({ Bucket: bucketName, Key: existingPhoto }));
-        console.log(`Старое фото удалено из S3: ${existingPhoto}`);
+        logger.info(`Старое фото удалено из S3: ${existingPhoto}`);
       }
     }
 
@@ -511,7 +611,9 @@ app.put("/api/users/:id", authenticate, upload.single("photo"), async (req, res)
       connection.release();
       return res.status(404).json({ error: "Пользователь не найден" });
     }
-    console.log("Пользователь обновлен, ID:", id);
+
+    await connection.commit();
+    logger.info("Пользователь обновлен, ID:", id);
 
     const updatedUser = {
       id: parseInt(id),
@@ -527,33 +629,38 @@ app.put("/api/users/:id", authenticate, upload.single("photo"), async (req, res)
     connection.release();
     res.json(updatedUser);
   } catch (error) {
-    console.error("Ошибка обновления пользователя:", error.message);
+    await connection.rollback();
+    logger.error("Ошибка обновления пользователя:", error.message);
     res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
+  } finally {
+    connection.release();
   }
 });
 
 // Удаление пользователя (защищено, только SUPER_ADMIN)
 app.delete("/api/users/:id", authenticate, async (req, res) => {
   if (req.user.role !== "SUPER_ADMIN") {
-    console.error("Доступ запрещен: Требуется роль SUPER_ADMIN");
+    logger.error("Доступ запрещен: Требуется роль SUPER_ADMIN");
     return res.status(403).json({ error: "Доступ запрещен: Требуется роль SUPER_ADMIN" });
   }
 
   const { id } = req.params;
 
+  const connection = await pool.getConnection();
   try {
-    const connection = await pool.getConnection();
+    await connection.beginTransaction();
+
     const [users] = await connection.execute("SELECT profile_picture FROM users1 WHERE id = ?", [id]);
     if (users.length === 0) {
       connection.release();
-      console.error("Пользователь не найден по ID:", id);
+      logger.error("Пользователь не найден по ID:", id);
       return res.status(404).json({ error: "Пользователь не найден" });
     }
 
     const profile_picture = users[0].profile_picture;
     if (profile_picture) {
       await s3Client.send(new DeleteObjectCommand({ Bucket: bucketName, Key: profile_picture }));
-      console.log(`Фото удалено из S3: ${profile_picture}`);
+      logger.info(`Фото удалено из S3: ${profile_picture}`);
     }
 
     const [result] = await connection.execute("DELETE FROM users1 WHERE id = ?", [id]);
@@ -561,13 +668,18 @@ app.delete("/api/users/:id", authenticate, async (req, res) => {
       connection.release();
       return res.status(404).json({ error: "Пользователь не найден" });
     }
-    console.log("Пользователь удален, ID:", id);
+
+    await connection.commit();
+    logger.info("Пользователь удален, ID:", id);
 
     connection.release();
     res.json({ message: "Пользователь успешно удален" });
   } catch (error) {
-    console.error("Ошибка удаления пользователя:", error.message);
+    await connection.rollback();
+    logger.error("Ошибка удаления пользователя:", error.message);
     res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
+  } finally {
+    connection.release();
   }
 });
 
@@ -576,11 +688,11 @@ app.get("/api/jk", authenticate, async (req, res) => {
   try {
     const connection = await pool.getConnection();
     const [rows] = await connection.execute("SELECT id, name FROM jk");
-    console.log("ЖК получены:", rows.length);
+    logger.info("ЖК получены:", rows.length);
     connection.release();
     res.json(rows);
   } catch (error) {
-    console.error("Ошибка получения ЖК:", error.message);
+    logger.error("Ошибка получения ЖК:", error.message);
     res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
   }
 });
@@ -590,11 +702,11 @@ app.get("/api/districts", authenticate, async (req, res) => {
   try {
     const connection = await pool.getConnection();
     const [rows] = await connection.execute("SELECT id, name FROM districts");
-    console.log("Районы получены:", rows.length);
+    logger.info("Районы получены:", rows.length);
     connection.release();
     res.json(rows);
   } catch (error) {
-    console.error("Ошибка получения районов:", error.message);
+    logger.error("Ошибка получения районов:", error.message);
     res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
   }
 });
@@ -608,11 +720,11 @@ app.get("/api/subdistricts", authenticate, async (req, res) => {
       "SELECT id, name FROM subdistricts WHERE district_id = ?",
       [district_id]
     );
-    console.log("Микрорайоны получены:", rows.length);
+    logger.info("Микрорайоны получены:", rows.length);
     connection.release();
     res.json(rows);
   } catch (error) {
-    console.error("Ошибка получения микрорайонов:", error.message);
+    logger.error("Ошибка получения микрорайонов:", error.message);
     res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
   }
 });
@@ -623,11 +735,17 @@ app.post("/api/properties", authenticate, upload.fields([
   { name: "document", maxCount: 1 },
 ]), async (req, res) => {
   if (!["SUPER_ADMIN", "REALTOR"].includes(req.user.role)) {
-    console.error("Доступ запрещен: Требуется роль SUPER_ADMIN или REALTOR");
+    logger.error("Доступ запрещен: Требуется роль SUPER_ADMIN или REALTOR");
     return res.status(403).json({ error: "Доступ запрещен: Требуется роль SUPER_ADMIN или REALTOR" });
   }
 
-  const { type_id, condition, series, zhk_id, owner_name, curator_ids, price, unit, rukprice, mkv, room, phone, district_id, subdistrict_id, address, notes, description, status, owner_id, etaj, etajnost } = req.body;
+  const { error, value } = propertySchema.validate(req.body);
+  if (error) {
+    logger.error("Ошибка валидации:", error.details);
+    return res.status(400).json({ error: error.details[0].message });
+  }
+
+  const { type_id, condition, series, zhk_id, owner_name, curator_ids, price, unit, rukprice, mkv, room, phone, district_id, subdistrict_id, address, notes, description, status, owner_id, etaj, etajnost } = value;
   const photos = req.files["photos"] ? req.files["photos"].map((file) => ({
     filename: `${Date.now()}-${Math.round(Math.random() * 1e9)}${path.extname(file.originalname)}`,
     buffer: file.buffer,
@@ -639,26 +757,31 @@ app.post("/api/properties", authenticate, upload.fields([
     mimetype: req.files["document"][0].mimetype,
   } : null;
 
-  if (!type_id || !price || !rukprice || !mkv || !address || !etaj || !etajnost) {
-    console.error("Ошибка: Не все обязательные поля предоставлены", { type_id, price, rukprice, mkv, address, etaj, etajnost });
-    return res.status(400).json({ error: "Все обязательные поля (type_id, price, rukprice, mkv, address, etaj, etajnost) должны быть предоставлены" });
-  }
-
-  if (isNaN(parseFloat(price)) || isNaN(parseFloat(rukprice)) || isNaN(parseFloat(mkv)) || isNaN(parseInt(etaj)) || isNaN(parseInt(etajnost))) {
-    console.error("Ошибка: Числовые поля некорректны", { price, rukprice, mkv, etaj, etajnost });
-    return res.status(400).json({ error: "Поля price, rukprice, mkv, etaj, etajnost должны быть числовыми" });
+  if ((photos.length + (document ? 1 : 0)) > 11) {
+    logger.error("Ошибка: Превышено максимальное количество файлов (10 фото + 1 документ)");
+    return res.status(400).json({ error: "Максимум 10 фотографий и 1 документ" });
   }
 
   let finalCuratorIds = curator_ids || (req.user.role === "REALTOR" ? req.user.id.toString() : null);
+  if (finalCuratorIds) {
+    const connection = await pool.getConnection();
+    const [curatorCheck] = await connection.execute("SELECT id FROM users1 WHERE id = ?", [finalCuratorIds]);
+    if (curatorCheck.length === 0) {
+      connection.release();
+      return res.status(400).json({ error: "Недействительный ID куратора" });
+    }
+    connection.release();
+  }
+
   if (req.user.role === "REALTOR" && curator_ids && curator_ids !== req.user.id.toString()) {
-    console.error("Ошибка: Риелтор может назначить только себя куратором", { curator_ids, userId: req.user.id });
+    logger.error("Ошибка: Риелтор может назначить только себя куратором", { curator_ids, userId: req.user.id });
     return res.status(403).json({ error: "Риелтор может назначить только себя куратором" });
   }
 
+  const connection = await pool.getConnection();
   try {
-    const connection = await pool.getConnection();
+    await connection.beginTransaction();
 
-    // Проверка zhk_id, если предоставлен
     if (zhk_id) {
       const [jkCheck] = await connection.execute("SELECT id FROM jk WHERE id = ?", [zhk_id]);
       if (jkCheck.length === 0) {
@@ -667,7 +790,6 @@ app.post("/api/properties", authenticate, upload.fields([
       }
     }
 
-    // Проверка district_id, если предоставлен
     if (district_id) {
       const [districtCheck] = await connection.execute("SELECT id FROM districts WHERE id = ?", [district_id]);
       if (districtCheck.length === 0) {
@@ -676,7 +798,6 @@ app.post("/api/properties", authenticate, upload.fields([
       }
     }
 
-    // Проверка subdistrict_id, если предоставлен
     if (subdistrict_id) {
       const [subdistrictCheck] = await connection.execute("SELECT id FROM subdistricts WHERE id = ? AND district_id = ?", [subdistrict_id, district_id || null]);
       if (subdistrictCheck.length === 0) {
@@ -693,7 +814,7 @@ app.post("/api/properties", authenticate, upload.fields([
         ContentType: photo.mimetype,
       };
       await s3Client.send(new PutObjectCommand(uploadParams));
-      console.log(`Изображение загружено в S3: ${photo.filename}`);
+      logger.info(`Изображение загружено в S3: ${photo.filename}`);
     }
 
     if (document) {
@@ -704,11 +825,10 @@ app.post("/api/properties", authenticate, upload.fields([
         ContentType: document.mimetype,
       };
       await s3Client.send(new PutObjectCommand(uploadParams));
-      console.log(`Документ загружен в S3: ${document.filename}`);
+      logger.info(`Документ загружен в S3: ${document.filename}`);
     }
 
     const photosJson = JSON.stringify(photos.map(img => img.filename));
-
     const [result] = await connection.execute(
       `INSERT INTO properties (
         type_id, \`condition\`, series, zhk_id, document_id, owner_name, curator_ids, price, unit, rukprice, mkv, room, phone, 
@@ -719,7 +839,7 @@ app.post("/api/properties", authenticate, upload.fields([
         condition || null,
         series || null,
         zhk_id || null,
-        0,
+        null,
         owner_name || null,
         finalCuratorIds,
         price,
@@ -743,7 +863,9 @@ app.post("/api/properties", authenticate, upload.fields([
         etajnost,
       ]
     );
-    console.log("Создан новый объект недвижимости, ID:", result.insertId);
+
+    await connection.commit();
+    logger.info("Создан новый объект недвижимости, ID:", result.insertId);
 
     const newProperty = {
       id: result.insertId,
@@ -751,7 +873,7 @@ app.post("/api/properties", authenticate, upload.fields([
       condition,
       series,
       zhk_id,
-      document_id: 0,
+      document_id: null,
       owner_name,
       curator_ids: finalCuratorIds,
       price,
@@ -778,8 +900,11 @@ app.post("/api/properties", authenticate, upload.fields([
     connection.release();
     res.json(newProperty);
   } catch (error) {
-    console.error("Ошибка создания объекта недвижимости:", error.message);
+    await connection.rollback();
+    logger.error("Ошибка создания объекта недвижимости:", error.message);
     res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
+  } finally {
+    connection.release();
   }
 });
 
@@ -789,12 +914,18 @@ app.put("/api/properties/:id", authenticate, upload.fields([
   { name: "document", maxCount: 1 },
 ]), async (req, res) => {
   if (!["SUPER_ADMIN", "REALTOR"].includes(req.user.role)) {
-    console.error("Доступ запрещен: Требуется роль SUPER_ADMIN или REALTOR");
+    logger.error("Доступ запрещен: Требуется роль SUPER_ADMIN или REALTOR");
     return res.status(403).json({ error: "Доступ запрещен: Требуется роль SUPER_ADMIN или REALTOR" });
   }
 
   const { id } = req.params;
-  const { type_id, condition, series, zhk_id, owner_name, curator_ids, price, unit, rukprice, mkv, room, phone, district_id, subdistrict_id, address, notes, description, status, owner_id, etaj, etajnost, existingPhotos } = req.body;
+  const { error, value } = propertySchema.validate(req.body);
+  if (error) {
+    logger.error("Ошибка валидации:", error.details);
+    return res.status(400).json({ error: error.details[0].message });
+  }
+
+  const { type_id, condition, series, zhk_id, owner_name, curator_ids, price, unit, rukprice, mkv, room, phone, district_id, subdistrict_id, address, notes, description, status, owner_id, etaj, etajnost, existingPhotos } = value;
   const photos = req.files["photos"] ? req.files["photos"].map((file) => ({
     filename: `${Date.now()}-${Math.round(Math.random() * 1e9)}${path.extname(file.originalname)}`,
     buffer: file.buffer,
@@ -806,39 +937,45 @@ app.put("/api/properties/:id", authenticate, upload.fields([
     mimetype: req.files["document"][0].mimetype,
   } : null;
 
-  if (!type_id || !price || !rukprice || !mkv || !address || !etaj || !etajnost) {
-    console.error("Ошибка: Не все обязательные поля предоставлены", { type_id, price, rukprice, mkv, address, etaj, etajnost });
-    return res.status(400).json({ error: "Все обязательные поля (type_id, price, rukprice, mkv, address, etaj, etajnost) должны быть предоставлены" });
-  }
-
-  if (isNaN(parseFloat(price)) || isNaN(parseFloat(rukprice)) || isNaN(parseFloat(mkv)) || isNaN(parseInt(etaj)) || isNaN(parseInt(etajnost))) {
-    console.error("Ошибка: Числовые поля некорректны", { price, rukprice, mkv, etaj, etajnost });
-    return res.status(400).json({ error: "Поля price, rukprice, mkv, etaj, etajnost должны быть числовыми" });
+  if ((photos.length + (document ? 1 : 0)) > 11) {
+    logger.error("Ошибка: Превышено максимальное количество файлов (10 фото + 1 документ)");
+    return res.status(400).json({ error: "Максимум 10 фотографий и 1 документ" });
   }
 
   let finalCuratorIds = curator_ids || (req.user.role === "REALTOR" ? req.user.id.toString() : null);
+  if (finalCuratorIds) {
+    const connection = await pool.getConnection();
+    const [curatorCheck] = await connection.execute("SELECT id FROM users1 WHERE id = ?", [finalCuratorIds]);
+    if (curatorCheck.length === 0) {
+      connection.release();
+      return res.status(400).json({ error: "Недействительный ID куратора" });
+    }
+    connection.release();
+  }
+
   if (req.user.role === "REALTOR" && curator_ids && curator_ids !== req.user.id.toString()) {
-    console.error("Ошибка: Риелтор может назначить только себя куратором", { curator_ids, userId: req.user.id });
+    logger.error("Ошибка: Риелтор может назначить только себя куратором", { curator_ids, userId: req.user.id });
     return res.status(403).json({ error: "Риелтор может назначить только себя куратором" });
   }
 
+  const connection = await pool.getConnection();
   try {
-    const connection = await pool.getConnection();
+    await connection.beginTransaction();
+
     const [existingProperties] = await connection.execute("SELECT photos, document, curator_ids FROM properties WHERE id = ?", [id]);
     if (existingProperties.length === 0) {
       connection.release();
-      console.error("Объект недвижимости не найден по ID:", id);
+      logger.error("Объект недвижимости не найден по ID:", id);
       return res.status(404).json({ error: "Объект недвижимости не найден" });
     }
 
     const existingProperty = existingProperties[0];
     if (req.user.role === "REALTOR" && existingProperty.curator_ids !== req.user.id.toString()) {
       connection.release();
-      console.error("Ошибка: Риелтор не является куратором этого объекта", { id, curator_ids: existingProperty.curator_ids, userId: req.user.id });
+      logger.error("Ошибка: Риелтор не является куратором этого объекта", { id, curator_ids: existingProperty.curator_ids, userId: req.user.id });
       return res.status(403).json({ error: "У вас нет прав для редактирования этого объекта" });
     }
 
-    // Проверка zhk_id, если предоставлен
     if (zhk_id) {
       const [jkCheck] = await connection.execute("SELECT id FROM jk WHERE id = ?", [zhk_id]);
       if (jkCheck.length === 0) {
@@ -847,7 +984,6 @@ app.put("/api/properties/:id", authenticate, upload.fields([
       }
     }
 
-    // Проверка district_id, если предоставлен
     if (district_id) {
       const [districtCheck] = await connection.execute("SELECT id FROM districts WHERE id = ?", [district_id]);
       if (districtCheck.length === 0) {
@@ -856,7 +992,6 @@ app.put("/api/properties/:id", authenticate, upload.fields([
       }
     }
 
-    // Проверка subdistrict_id, если предоставлен
     if (subdistrict_id) {
       const [subdistrictCheck] = await connection.execute("SELECT id FROM subdistricts WHERE id = ? AND district_id = ?", [subdistrict_id, district_id || null]);
       if (subdistrictCheck.length === 0) {
@@ -870,31 +1005,29 @@ app.put("/api/properties/:id", authenticate, upload.fields([
       try {
         photoFiles = JSON.parse(existingProperty.photos);
         if (!Array.isArray(photoFiles)) {
-          console.warn(`Поле photos не является массивом для ID: ${id}, данные: ${existingProperty.photos}`);
-          photoFiles = existingProperty.photos.split(",").filter(p => p.trim());
+          logger.warn(`Поле photos не является массивом для ID: ${id}, данные: ${existingProperty.photos}`);
+          photoFiles = [];
         }
       } catch (error) {
-        console.warn(`Ошибка парсинга photos для ID: ${id}, Ошибка: ${error.message}, Данные: ${existingProperty.photos}`);
-        photoFiles = existingProperty.photos.split(",").filter(p => p.trim());
+        logger.warn(`Ошибка парсинга photos для ID: ${id}, Ошибка: ${error.message}, Данные: ${existingProperty.photos}`);
+        photoFiles = [];
       }
     }
 
-    // Парсинг existingPhotos из запроса
     let existingPhotosList = [];
     if (existingPhotos) {
       try {
         existingPhotosList = JSON.parse(existingPhotos);
         if (!Array.isArray(existingPhotosList)) {
-          console.warn(`existingPhotos не является массивом для ID: ${id}, данные: ${existingPhotos}`);
+          logger.warn(`existingPhotos не является массивом для ID: ${id}, данные: ${existingPhotos}`);
           existingPhotosList = [];
         }
       } catch (error) {
-        console.warn(`Ошибка парсинга existingPhotos для ID: ${id}, Ошибка: ${error.message}, Данные: ${existingPhotos}`);
+        logger.warn(`Ошибка парсинга existingPhotos для ID: ${id}, Ошибка: ${error.message}, Данные: ${existingPhotos}`);
         existingPhotosList = [];
       }
     }
 
-    // Загрузка новых фотографий в S3
     for (const photo of photos) {
       const uploadParams = {
         Bucket: bucketName,
@@ -903,25 +1036,22 @@ app.put("/api/properties/:id", authenticate, upload.fields([
         ContentType: photo.mimetype,
       };
       await s3Client.send(new PutObjectCommand(uploadParams));
-      console.log(`Новое изображение загружено в S3: ${photo.filename}`);
+      logger.info(`Новое изображение загружено в S3: ${photo.filename}`);
     }
 
-    // Удаление фотографий, которых нет в existingPhotosList
     const photosToDelete = photoFiles.filter(p => !existingPhotosList.includes(p));
     for (const oldPhoto of photosToDelete) {
       try {
         await s3Client.send(new DeleteObjectCommand({ Bucket: bucketName, Key: oldPhoto }));
-        console.log(`Старое изображение удалено из S3: ${oldPhoto}`);
+        logger.info(`Старое изображение удалено из S3: ${oldPhoto}`);
       } catch (error) {
-        console.warn(`Не удалось удалить старое изображение из S3: ${oldPhoto}, Ошибка: ${error.message}`);
+        logger.warn(`Не удалось удалить старое изображение из S3: ${oldPhoto}, Ошибка: ${error.message}`);
       }
     }
 
-    // Объединение существующих и новых фотографий
     const newPhotos = [...existingPhotosList, ...photos.map(img => img.filename)];
     const photosJson = newPhotos.length > 0 ? JSON.stringify(newPhotos) : null;
 
-    // Обработка обновления документа
     let newDocument = existingProperty.document;
     if (document) {
       const uploadParams = {
@@ -931,14 +1061,14 @@ app.put("/api/properties/:id", authenticate, upload.fields([
         ContentType: document.mimetype,
       };
       await s3Client.send(new PutObjectCommand(uploadParams));
-      console.log(`Новый документ загружен в S3: ${document.filename}`);
+      logger.info(`Новый документ загружен в S3: ${document.filename}`);
 
       if (existingProperty.document) {
         try {
           await s3Client.send(new DeleteObjectCommand({ Bucket: bucketName, Key: existingProperty.document }));
-          console.log(`Старый документ удален из S3: ${existingProperty.document}`);
+          logger.info(`Старый документ удален из S3: ${existingProperty.document}`);
         } catch (error) {
-          console.warn(`Не удалось удалить старый документ из S3: ${existingProperty.document}, Ошибка: ${error.message}`);
+          logger.warn(`Не удалось удалить старый документ из S3: ${existingProperty.document}, Ошибка: ${error.message}`);
         }
       }
       newDocument = document.filename;
@@ -954,7 +1084,7 @@ app.put("/api/properties/:id", authenticate, upload.fields([
         condition || null,
         series || null,
         zhk_id || null,
-        0,
+        null,
         owner_name || null,
         finalCuratorIds,
         price,
@@ -982,7 +1112,9 @@ app.put("/api/properties/:id", authenticate, upload.fields([
       connection.release();
       return res.status(404).json({ error: "Объект недвижимости не найден" });
     }
-    console.log("Объект недвижимости обновлен, ID:", id);
+
+    await connection.commit();
+    logger.info("Объект недвижимости обновлен, ID:", id);
 
     const updatedProperty = {
       id: parseInt(id),
@@ -990,7 +1122,7 @@ app.put("/api/properties/:id", authenticate, upload.fields([
       condition,
       series,
       zhk_id,
-      document_id: 0,
+      document_id: null,
       owner_name,
       curator_ids: finalCuratorIds,
       price,
@@ -1017,33 +1149,38 @@ app.put("/api/properties/:id", authenticate, upload.fields([
     connection.release();
     res.json(updatedProperty);
   } catch (error) {
-    console.error("Ошибка обновления объекта недвижимости:", error.message);
+    await connection.rollback();
+    logger.error("Ошибка обновления объекта недвижимости:", error.message);
     res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
+  } finally {
+    connection.release();
   }
 });
 
 // Удаление объекта недвижимости (защищено, SUPER_ADMIN или REALTOR)
 app.delete("/api/properties/:id", authenticate, async (req, res) => {
   if (!["SUPER_ADMIN", "REALTOR"].includes(req.user.role)) {
-    console.error("Доступ запрещен: Требуется роль SUPER_ADMIN или REALTOR");
+    logger.error("Доступ запрещен: Требуется роль SUPER_ADMIN или REALTOR");
     return res.status(403).json({ error: "Доступ запрещен: Требуется роль SUPER_ADMIN или REALTOR" });
   }
 
   const { id } = req.params;
 
+  const connection = await pool.getConnection();
   try {
-    const connection = await pool.getConnection();
+    await connection.beginTransaction();
+
     const [properties] = await connection.execute("SELECT photos, document, curator_ids FROM properties WHERE id = ?", [id]);
     if (properties.length === 0) {
       connection.release();
-      console.error("Объект недвижимости не найден по ID:", id);
+      logger.error("Объект недвижимости не найден по ID:", id);
       return res.status(404).json({ error: "Объект недвижимости не найден" });
     }
 
     const existingProperty = properties[0];
     if (req.user.role === "REALTOR" && existingProperty.curator_ids !== req.user.id.toString()) {
       connection.release();
-      console.error("Ошибка: Риелтор не является куратором этого объекта", { id, curator_ids: existingProperty.curator_ids, userId: req.user.id });
+      logger.error("Ошибка: Риелтор не является куратором этого объекта", { id, curator_ids: existingProperty.curator_ids, userId: req.user.id });
       return res.status(403).json({ error: "У вас нет прав для удаления этого объекта" });
     }
 
@@ -1052,28 +1189,28 @@ app.delete("/api/properties/:id", authenticate, async (req, res) => {
       try {
         photoFiles = JSON.parse(existingProperty.photos);
         if (!Array.isArray(photoFiles)) {
-          console.warn(`Поле photos не является массивом для ID: ${id}, данные: ${existingProperty.photos}`);
-          photoFiles = existingProperty.photos.split(",").filter(p => p.trim());
+          logger.warn(`Поле photos не является массивом для ID: ${id}, данные: ${existingProperty.photos}`);
+          photoFiles = [];
         }
       } catch (error) {
-        console.warn(`Ошибка парсинга photos для ID: ${id}, Ошибка: ${error.message}, Данные: ${existingProperty.photos}`);
-        photoFiles = existingProperty.photos.split(",").filter(p => p.trim());
+        logger.warn(`Ошибка парсинга photos для ID: ${id}, Ошибка: ${error.message}, Данные: ${existingProperty.photos}`);
+        photoFiles = [];
       }
       for (const img of photoFiles) {
         try {
           await s3Client.send(new DeleteObjectCommand({ Bucket: bucketName, Key: img }));
-          console.log(`Изображение удалено из S3: ${img}`);
+          logger.info(`Изображение удалено из S3: ${img}`);
         } catch (error) {
-          console.warn(`Не удалось удалить изображение из S3: ${img}, Ошибка: ${error.message}`);
+          logger.warn(`Не удалось удалить изображение из S3: ${img}, Ошибка: ${error.message}`);
         }
       }
     }
     if (existingProperty.document) {
       try {
         await s3Client.send(new DeleteObjectCommand({ Bucket: bucketName, Key: existingProperty.document }));
-        console.log(`Документ удален из S3: ${existingProperty.document}`);
+        logger.info(`Документ удален из S3: ${existingProperty.document}`);
       } catch (error) {
-        console.warn(`Не удалось удалить документ из S3: ${existingProperty.document}, Ошибка: ${error.message}`);
+        logger.warn(`Не удалось удалить документ из S3: ${existingProperty.document}, Ошибка: ${error.message}`);
       }
     }
 
@@ -1082,26 +1219,40 @@ app.delete("/api/properties/:id", authenticate, async (req, res) => {
       connection.release();
       return res.status(404).json({ error: "Объект недвижимости не найден" });
     }
-    console.log("Объект недвижимости удален, ID:", id);
+
+    await connection.commit();
+    logger.info("Объект недвижимости удален, ID:", id);
 
     connection.release();
     res.json({ message: "Объект недвижимости успешно удален" });
   } catch (error) {
-    console.error("Ошибка удаления объекта недвижимости:", error.message);
+    await connection.rollback();
+    logger.error("Ошибка удаления объекта недвижимости:", error.message);
     res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
+  } finally {
+    connection.release();
   }
 });
 
 // Получение всех объектов недвижимости (защищено)
 app.get("/api/properties", authenticate, async (req, res) => {
+  const page = parseInt(req.query.page) || 1;
+  const limit = parseInt(req.query.limit) || 10;
+  const offset = (page - 1) * limit;
+
   try {
     const connection = await pool.getConnection();
     const [rows] = await connection.execute(
       `SELECT p.*, CONCAT(u.first_name, ' ', u.last_name) AS curator_name
        FROM properties p
-       LEFT JOIN users1 u ON p.curator_ids = u.id`
+       LEFT JOIN users1 u ON p.curator_ids = u.id
+       LIMIT ? OFFSET ?`,
+      [limit, offset]
     );
-    console.log("Объекты недвижимости получены из базы данных:", rows.length);
+    const [totalRows] = await connection.execute("SELECT COUNT(*) as total FROM properties");
+    const total = totalRows[0].total;
+
+    logger.info(`Объекты недвижимости получены: ${rows.length}, страница: ${page}, лимит: ${limit}`);
 
     const properties = rows.map((row) => {
       let parsedPhotos = [];
@@ -1109,12 +1260,12 @@ app.get("/api/properties", authenticate, async (req, res) => {
         try {
           parsedPhotos = JSON.parse(row.photos);
           if (!Array.isArray(parsedPhotos)) {
-            console.warn(`Поле photos не является массивом для ID: ${row.id}, данные: ${row.photos}`);
-            parsedPhotos = row.photos.split(",").filter(p => p.trim());
+            logger.warn(`Поле photos не является массивом для ID: ${row.id}, данные: ${row.photos}`);
+            parsedPhotos = [];
           }
         } catch (error) {
-          console.warn(`Ошибка парсинга photos для ID: ${row.id}, Ошибка: ${error.message}, Данные: ${row.photos}`);
-          parsedPhotos = row.photos.split(",").filter(p => p.trim());
+          logger.warn(`Ошибка парсинга photos для ID: ${row.id}, Ошибка: ${error.message}, Данные: ${row.photos}`);
+          parsedPhotos = [];
         }
       }
 
@@ -1124,26 +1275,42 @@ app.get("/api/properties", authenticate, async (req, res) => {
         document: row.document ? `https://s3.twcstorage.ru/${bucketName}/${row.document}` : null,
         date: new Date(row.created_at).toLocaleDateString("ru-RU"),
         time: new Date(row.created_at).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" }),
-        curator_name: row.curator_name || row.curator_ids || 'Не указан',
+        curator_name: row.curator_name || row.curator_ids || "Не указан",
       };
     });
 
     connection.release();
-    res.json(properties);
+    res.json({
+      data: properties,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit),
+      },
+    });
   } catch (error) {
-    console.error("Ошибка получения объектов недвижимости:", error.message);
+    logger.error("Ошибка получения объектов недвижимости:", error.message);
     res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
   }
 });
 
 // Получение всех объявлений для AdminDashboard (защищено)
 app.get("/api/listings", authenticate, async (req, res) => {
+  const page = parseInt(req.query.page) || 1;
+  const limit = parseInt(req.query.limit) || 10;
+  const offset = (page - 1) * limit;
+
   try {
     const connection = await pool.getConnection();
     const [rows] = await connection.execute(
-      "SELECT id, type_id, price, rukprice, mkv, status, address, created_at FROM properties"
+      "SELECT id, type_id, price, rukprice, mkv, status, address, created_at FROM properties LIMIT ? OFFSET ?",
+      [limit, offset]
     );
-    console.log("Объявления получены из properties:", rows.length);
+    const [totalRows] = await connection.execute("SELECT COUNT(*) as total FROM properties");
+    const total = totalRows[0].total;
+
+    logger.info(`Объявления получены: ${rows.length}, страница: ${page}, лимит: ${limit}`);
 
     const listings = rows.map((row) => ({
       id: row.id,
@@ -1156,59 +1323,64 @@ app.get("/api/listings", authenticate, async (req, res) => {
     }));
 
     connection.release();
-    res.json(listings);
+    res.json({
+      data: listings,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit),
+      },
+    });
   } catch (error) {
-    console.error("Ошибка получения объявлений:", error.message);
+    logger.error("Ошибка получения объявлений:", error.message);
     res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
   }
 });
 
-
-
-// Получение всех районов и микрорайонов111
+// Получение всех районов и микрорайонов
 app.get("/api/raions", authenticate, async (req, res) => {
   try {
     const connection = await pool.getConnection();
-    
-    // Получение районов
     const [districts] = await connection.execute("SELECT id, name, NULL AS parentRaionId FROM districts");
-    
-    // Получение микрорайонов
     const [subdistricts] = await connection.execute("SELECT id, name, district_id AS parentRaionId FROM subdistricts");
-    
-    // Объединяем районы и микрорайоны
     const raions = [
       ...districts.map(row => ({ id: row.id, name: row.name, parentRaionId: null, isRaion: true })),
       ...subdistricts.map(row => ({ id: row.id, name: row.name, parentRaionId: row.parentRaionId, isRaion: false })),
     ];
-    
-    console.log("Районы и микрорайоны получены:", raions.length);
+    logger.info("Районы и микрорайоны получены:", raions.length);
     connection.release();
     res.json(raions);
   } catch (error) {
-    console.error("Ошибка получения районов и микрорайонов:", error.message);
+    logger.error("Ошибка получения районов и микрорайонов:", error.message);
     res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
   }
 });
 
-// Эндпоинт для перенаправления объектов недвижимости (защищено, только SUPER_ADMIN)
+// Перенаправление объектов недвижимости (защищено, только SUPER_ADMIN)
 app.patch("/api/properties/redirect", authenticate, async (req, res) => {
   if (req.user.role !== "SUPER_ADMIN") {
-    console.error("Доступ запрещен: Требуется роль SUPER_ADMIN");
+    logger.error("Доступ запрещен: Требуется роль SUPER_ADMIN");
     return res.status(403).json({ error: "Доступ запрещен: Требуется роль SUPER_ADMIN" });
   }
 
   const { propertyIds, curator_ids } = req.body;
 
   if (!Array.isArray(propertyIds) || !curator_ids) {
-    console.error("Ошибка: propertyIds должен быть массивом, curator_ids обязателен", { propertyIds, curator_ids });
+    logger.error("Ошибка: propertyIds должен быть массивом, curator_ids обязателен", { propertyIds, curator_ids });
     return res.status(400).json({ error: "propertyIds должен быть массивом, curator_ids обязателен" });
   }
 
+  const connection = await pool.getConnection();
   try {
-    const connection = await pool.getConnection();
+    await connection.beginTransaction();
 
-    // Проверка существования всех объектов недвижимости
+    const [curatorCheck] = await connection.execute("SELECT id FROM users1 WHERE id = ?", [curator_ids]);
+    if (curatorCheck.length === 0) {
+      connection.release();
+      return res.status(400).json({ error: "Недействительный ID куратора" });
+    }
+
     const [existingProperties] = await connection.execute(
       "SELECT id, curator_ids FROM properties WHERE id IN (?)",
       [propertyIds]
@@ -1217,11 +1389,10 @@ app.patch("/api/properties/redirect", authenticate, async (req, res) => {
       const existingIds = existingProperties.map(p => p.id);
       const missingIds = propertyIds.filter(id => !existingIds.includes(id));
       connection.release();
-      console.error("Некоторые объекты не найдены:", missingIds);
+      logger.error("Некоторые объекты не найдены:", missingIds);
       return res.status(404).json({ error: "Некоторые объекты недвижимости не найдены" });
     }
 
-    // Обновление curator_ids для всех указанных объектов
     const [result] = await connection.execute(
       "UPDATE properties SET curator_ids = ? WHERE id IN (?)",
       [curator_ids, propertyIds]
@@ -1232,17 +1403,21 @@ app.patch("/api/properties/redirect", authenticate, async (req, res) => {
       return res.status(404).json({ error: "Ни один объект не был обновлен" });
     }
 
-    console.log(`Перенаправлено ${result.affectedRows} объектов недвижимости, новые curator_ids: ${curator_ids}`);
+    await connection.commit();
+    logger.info(`Перенаправлено ${result.affectedRows} объектов недвижимости, новые curator_ids: ${curator_ids}`);
     connection.release();
     res.json({ message: "Объекты недвижимости успешно перенаправлены", affectedRows: result.affectedRows });
   } catch (error) {
-    console.error("Ошибка перенаправления объектов недвижимости:", error.message);
+    await connection.rollback();
+    logger.error("Ошибка перенаправления объектов недвижимости:", error.message);
     res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
+  } finally {
+    connection.release();
   }
 });
 
 // Запуск сервера
 app.listen(port, () => {
-  console.log(`Сервер запущен на http://localhost:${port}`);
-  console.log(`Публичный доступ: ${publicDomain}:${port}`);
+  logger.info(`Сервер запущен на http://localhost:${port}`);
+  logger.info(`Публичный доступ: ${publicDomain}:${port}`);
 });
