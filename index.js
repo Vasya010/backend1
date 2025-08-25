@@ -95,7 +95,7 @@ const authenticate = async (req, res, next) => {
   }
 };
 
-// Database connection test and admin setup
+// Database connection test and setup
 async function testDatabaseConnection() {
   try {
     const connection = await pool.getConnection();
@@ -170,6 +170,50 @@ async function testDatabaseConnection() {
       `);
     }
 
+    // Create jk table if it doesn't exist
+    const [jkTables] = await connection.execute("SHOW TABLES LIKE 'jk'");
+    if (jkTables.length === 0) {
+      console.log("Table jk does not exist, creating...");
+      await connection.execute(`
+        CREATE TABLE jk (
+          id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+          name VARCHAR(255) NOT NULL,
+          description TEXT DEFAULT NULL,
+          address VARCHAR(255) DEFAULT NULL,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        ) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci
+      `);
+    }
+
+    // Create districts table if it doesn't exist
+    const [districtTables] = await connection.execute("SHOW TABLES LIKE 'districts'");
+    if (districtTables.length === 0) {
+      console.log("Table districts does not exist, creating...");
+      await connection.execute(`
+        CREATE TABLE districts (
+          id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+          name VARCHAR(255) NOT NULL,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        ) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci
+      `);
+    }
+
+    // Create subdistricts table if it doesn't exist
+    const [subdistrictTables] = await connection.execute("SHOW TABLES LIKE 'subdistricts'");
+    if (subdistrictTables.length === 0) {
+      console.log("Table subdistricts does not exist, creating...");
+      await connection.execute(`
+        CREATE TABLE subdistricts (
+          id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+          name VARCHAR(255) NOT NULL,
+          district_id INT UNSIGNED NOT NULL,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (district_id) REFERENCES districts(id) ON DELETE CASCADE
+        ) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci
+      `);
+    }
+
+    // Admin setup
     const adminEmail = process.env.ADMIN_EMAIL || "admin@example.com";
     const adminPassword = process.env.ADMIN_PASSWORD || "admin123";
     const hashedPassword = await bcrypt.hash(adminPassword, 10);
@@ -296,6 +340,11 @@ app.post("/api/logout", authenticate, async (req, res) => {
 
 // Get all users (protected)
 app.get("/api/users", authenticate, async (req, res) => {
+  if (req.user.role !== "SUPER_ADMIN") {
+    console.error("Access denied: Not SUPER_ADMIN");
+    return res.status(403).json({ error: "Access denied: SUPER_ADMIN role required" });
+  }
+
   try {
     const connection = await pool.getConnection();
     const [rows] = await connection.execute(
@@ -522,6 +571,52 @@ app.delete("/api/users/:id", authenticate, async (req, res) => {
   }
 });
 
+// Get all JK (protected)
+app.get("/api/jk", authenticate, async (req, res) => {
+  try {
+    const connection = await pool.getConnection();
+    const [rows] = await connection.execute("SELECT id, name FROM jk");
+    console.log("JK retrieved:", rows.length);
+    connection.release();
+    res.json(rows);
+  } catch (error) {
+    console.error("Error retrieving JK:", error.message);
+    res.status(500).json({ error: `Internal server error: ${error.message}` });
+  }
+});
+
+// Get all districts (protected)
+app.get("/api/districts", authenticate, async (req, res) => {
+  try {
+    const connection = await pool.getConnection();
+    const [rows] = await connection.execute("SELECT id, name FROM districts");
+    console.log("Districts retrieved:", rows.length);
+    connection.release();
+    res.json(rows);
+  } catch (error) {
+    console.error("Error retrieving districts:", error.message);
+    res.status(500).json({ error: `Internal server error: ${error.message}` });
+  }
+});
+
+// Get subdistricts by district_id (protected)
+app.get("/api/subdistricts", authenticate, async (req, res) => {
+  const { district_id } = req.query;
+  try {
+    const connection = await pool.getConnection();
+    const [rows] = await connection.execute(
+      "SELECT id, name FROM subdistricts WHERE district_id = ?",
+      [district_id]
+    );
+    console.log("Subdistricts retrieved:", rows.length);
+    connection.release();
+    res.json(rows);
+  } catch (error) {
+    console.error("Error retrieving subdistricts:", error.message);
+    res.status(500).json({ error: `Internal server error: ${error.message}` });
+  }
+});
+
 // Create new property (protected, SUPER_ADMIN or REALTOR)
 app.post("/api/properties", authenticate, upload.fields([
   { name: "photos", maxCount: 10 },
@@ -561,6 +656,35 @@ app.post("/api/properties", authenticate, upload.fields([
   }
 
   try {
+    const connection = await pool.getConnection();
+
+    // Validate zhk_id if provided
+    if (zhk_id) {
+      const [jkCheck] = await connection.execute("SELECT id FROM jk WHERE id = ?", [zhk_id]);
+      if (jkCheck.length === 0) {
+        connection.release();
+        return res.status(400).json({ error: "Invalid JK ID" });
+      }
+    }
+
+    // Validate district_id if provided
+    if (district_id) {
+      const [districtCheck] = await connection.execute("SELECT id FROM districts WHERE id = ?", [district_id]);
+      if (districtCheck.length === 0) {
+        connection.release();
+        return res.status(400).json({ error: "Invalid District ID" });
+      }
+    }
+
+    // Validate subdistrict_id if provided
+    if (subdistrict_id) {
+      const [subdistrictCheck] = await connection.execute("SELECT id FROM subdistricts WHERE id = ? AND district_id = ?", [subdistrict_id, district_id || null]);
+      if (subdistrictCheck.length === 0) {
+        connection.release();
+        return res.status(400).json({ error: "Invalid Subdistrict ID or Subdistrict does not belong to selected District" });
+      }
+    }
+
     for (const photo of photos) {
       const uploadParams = {
         Bucket: bucketName,
@@ -583,7 +707,6 @@ app.post("/api/properties", authenticate, upload.fields([
       console.log(`Document uploaded to S3: ${document.filename}`);
     }
 
-    const connection = await pool.getConnection();
     const photosJson = JSON.stringify(photos.map(img => img.filename));
 
     const [result] = await connection.execute(
@@ -713,6 +836,33 @@ app.put("/api/properties/:id", authenticate, upload.fields([
       connection.release();
       console.error("Error: REALTOR is not the curator of this property", { id, curator_ids: existingProperty.curator_ids, userId: req.user.id });
       return res.status(403).json({ error: "You do not have permission to edit this property" });
+    }
+
+    // Validate zhk_id if provided
+    if (zhk_id) {
+      const [jkCheck] = await connection.execute("SELECT id FROM jk WHERE id = ?", [zhk_id]);
+      if (jkCheck.length === 0) {
+        connection.release();
+        return res.status(400).json({ error: "Invalid JK ID" });
+      }
+    }
+
+    // Validate district_id if provided
+    if (district_id) {
+      const [districtCheck] = await connection.execute("SELECT id FROM districts WHERE id = ?", [district_id]);
+      if (districtCheck.length === 0) {
+        connection.release();
+        return res.status(400).json({ error: "Invalid District ID" });
+      }
+    }
+
+    // Validate subdistrict_id if provided
+    if (subdistrict_id) {
+      const [subdistrictCheck] = await connection.execute("SELECT id FROM subdistricts WHERE id = ? AND district_id = ?", [subdistrict_id, district_id || null]);
+      if (subdistrictCheck.length === 0) {
+        connection.release();
+        return res.status(400).json({ error: "Invalid Subdistrict ID or Subdistrict does not belong to selected District" });
+      }
     }
 
     let photoFiles = [];
@@ -947,9 +1097,9 @@ app.get("/api/properties", authenticate, async (req, res) => {
   try {
     const connection = await pool.getConnection();
     const [rows] = await connection.execute(
-      `SELECT id, type_id, \`condition\`, series, zhk_id, document_id, owner_name, curator_ids, price, unit, rukprice, mkv, room, phone, 
-       district_id, subdistrict_id, address, notes, description, latitude, longitude, created_at, photos, document, status, owner_id, etaj, etajnost 
-       FROM properties`
+      `SELECT p.*, u.name AS curator_name
+       FROM properties p
+       LEFT JOIN users1 u ON p.curator_ids = u.id`
     );
     console.log("Properties retrieved from DB:", rows.length);
 
@@ -974,6 +1124,7 @@ app.get("/api/properties", authenticate, async (req, res) => {
         document: row.document ? `https://s3.twcstorage.ru/${bucketName}/${row.document}` : null,
         date: new Date(row.created_at).toLocaleDateString("ru-RU"),
         time: new Date(row.created_at).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" }),
+        curator_name: row.curator_name || row.curator_ids || 'Not specified',
       };
     });
 
@@ -1012,7 +1163,7 @@ app.get("/api/listings", authenticate, async (req, res) => {
   }
 });
 
-// Start server1
+// Start server
 app.listen(port, () => {
   console.log(`Server running on http://localhost:${port}`);
   console.log(`Public access: ${publicDomain}:${port}`);
