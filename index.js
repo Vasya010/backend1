@@ -805,7 +805,7 @@ app.post("/api/properties", authenticate, upload.fields([
     return res.status(403).json({ error: "Доступ запрещен: Требуется роль SUPER_ADMIN или REALTOR" });
   }
 
-  const { type_id, condition, series, zhk_id, owner_name, curator_ids, price, unit, rukprice, mkv, room, phone, district_id, subdistrict_id, address, notes, description, status, owner_id, etaj, etajnost } = req.body;
+  const { type_id, condition, series, zhk_id, owner_name, curator_ids, price, unit, rukprice, mkv, room, owner_phone, district_id, subdistrict_id, address, notes, description, status, owner_id, etaj, etajnost } = req.body;
   const photos = req.files["photos"] ? req.files["photos"].map((file) => ({
     filename: `${Date.now()}-${Math.round(Math.random() * 1e9)}${path.extname(file.originalname)}`,
     buffer: file.buffer,
@@ -889,7 +889,7 @@ app.post("/api/properties", authenticate, upload.fields([
 
     const [result] = await connection.execute(
       `INSERT INTO properties (
-        type_id, \`condition\`, series, zhk_id, document_id, owner_name, curator_ids, price, unit, rukprice, mkv, room, phone, 
+        type_id, \`condition\`, series, zhk_id, document_id, owner_name, curator_ids, price, unit, rukprice, mkv, room, owner_phone, 
         district_id, subdistrict_id, address, notes, description, latitude, longitude, photos, document, status, owner_id, etaj, etajnost
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
@@ -905,7 +905,7 @@ app.post("/api/properties", authenticate, upload.fields([
         rukprice,
         mkv,
         room || null,
-        phone || null,
+        owner_phone || null, // Use owner_phone instead of phone
         district_id || null,
         subdistrict_id || null,
         address,
@@ -937,7 +937,7 @@ app.post("/api/properties", authenticate, upload.fields([
       rukprice,
       mkv,
       room,
-      owner_phone: phone, // Map 'phone' to 'owner_phone' for frontend consistency
+      owner_phone, // Use owner_phone directly
       district_id,
       subdistrict_id,
       address,
@@ -972,7 +972,7 @@ app.put("/api/properties/:id", authenticate, upload.fields([
   }
 
   const { id } = req.params;
-  const { type_id, condition, series, zhk_id, owner_name, curator_ids, price, unit, rukprice, mkv, room, phone, district_id, subdistrict_id, address, notes, description, status, owner_id, etaj, etajnost, existingPhotos } = req.body;
+  const { type_id, condition, series, zhk_id, owner_name, curator_ids, price, unit, rukprice, mkv, room, owner_phone, district_id, subdistrict_id, address, notes, description, status, owner_id, etaj, etajnost, existingPhotos } = req.body;
   const photos = req.files["photos"] ? req.files["photos"].map((file) => ({
     filename: `${Date.now()}-${Math.round(Math.random() * 1e9)}${path.extname(file.originalname)}`,
     buffer: file.buffer,
@@ -985,7 +985,7 @@ app.put("/api/properties/:id", authenticate, upload.fields([
   } : null;
 
   console.log("Входные данные для обновления объекта недвижимости:", {
-    id, type_id, condition, series, zhk_id, owner_name, curator_ids, price, unit, rukprice, mkv, room, phone, district_id, subdistrict_id, address, notes, description, status, owner_id, etaj, etajnost, existingPhotos, hasNewPhotos: photos.length > 0, hasDocument: !!document
+    id, type_id, condition, series, zhk_id, owner_name, curator_ids, price, unit, rukprice, mkv, room, owner_phone, district_id, subdistrict_id, address, notes, description, status, owner_id, etaj, etajnost, existingPhotos, hasNewPhotos: photos.length > 0, hasDocument: !!document
   });
 
   if (!type_id || !price || !rukprice || !mkv || !address || !etaj || !etajnost) {
@@ -1140,7 +1140,7 @@ app.put("/api/properties/:id", authenticate, upload.fields([
 
     const [result] = await connection.execute(
       `UPDATE properties SET
-        type_id = ?, \`condition\` = ?, series = ?, zhk_id = ?, document_id = ?, owner_name = ?, curator_ids = ?, price = ?, unit = ?, rukprice = ?, mkv = ?, room = ?, phone = ?,
+        type_id = ?, \`condition\` = ?, series = ?, zhk_id = ?, document_id = ?, owner_name = ?, curator_ids = ?, price = ?, unit = ?, rukprice = ?, mkv = ?, room = ?, owner_phone = ?,
         district_id = ?, subdistrict_id = ?, address = ?, notes = ?, description = ?, photos = ?, document = ?, status = ?, owner_id = ?, etaj = ?, etajnost = ?
         WHERE id = ?`,
       [
@@ -1156,7 +1156,7 @@ app.put("/api/properties/:id", authenticate, upload.fields([
         rukprice,
         mkv,
         room || null,
-        phone || null,
+        owner_phone || null, // Use owner_phone instead of phone
         district_id || null,
         subdistrict_id || null,
         address,
@@ -1193,7 +1193,7 @@ app.put("/api/properties/:id", authenticate, upload.fields([
       rukprice,
       mkv,
       room,
-      phone,
+      owner_phone, // Use owner_phone directly
       district_id,
       subdistrict_id,
       address,
@@ -1317,7 +1317,7 @@ app.get("/api/properties", authenticate, async (req, res) => {
 
       return {
         ...row,
-        owner_phone: row.phone, // Map 'phone' to 'owner_phone' for frontend consistency
+        owner_phone: row.owner_phone, // Use owner_phone instead of phone
         photos: parsedPhotos.map((img) => `https://s3.twcstorage.ru/${bucketName}/${img}`),
         document: row.document ? `https://s3.twcstorage.ru/${bucketName}/${row.document}` : null,
         date: new Date(row.created_at).toLocaleDateString("ru-RU"),
