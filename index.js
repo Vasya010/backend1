@@ -1163,6 +1163,56 @@ app.get("/api/listings", authenticate, async (req, res) => {
   }
 });
 
+// Эндпоинт для перенаправления объектов недвижимости (защищено, только SUPER_ADMIN)
+app.patch("/api/properties/redirect", authenticate, async (req, res) => {
+  if (req.user.role !== "SUPER_ADMIN") {
+    console.error("Доступ запрещен: Требуется роль SUPER_ADMIN");
+    return res.status(403).json({ error: "Доступ запрещен: Требуется роль SUPER_ADMIN" });
+  }
+
+  const { propertyIds, curator_ids } = req.body;
+
+  if (!Array.isArray(propertyIds) || !curator_ids) {
+    console.error("Ошибка: propertyIds должен быть массивом, curator_ids обязателен", { propertyIds, curator_ids });
+    return res.status(400).json({ error: "propertyIds должен быть массивом, curator_ids обязателен" });
+  }
+
+  try {
+    const connection = await pool.getConnection();
+
+    // Проверка существования всех объектов недвижимости
+    const [existingProperties] = await connection.execute(
+      "SELECT id, curator_ids FROM properties WHERE id IN (?)",
+      [propertyIds]
+    );
+    if (existingProperties.length !== propertyIds.length) {
+      const existingIds = existingProperties.map(p => p.id);
+      const missingIds = propertyIds.filter(id => !existingIds.includes(id));
+      connection.release();
+      console.error("Некоторые объекты не найдены:", missingIds);
+      return res.status(404).json({ error: "Некоторые объекты недвижимости не найдены" });
+    }
+
+    // Обновление curator_ids для всех указанных объектов
+    const [result] = await connection.execute(
+      "UPDATE properties SET curator_ids = ? WHERE id IN (?)",
+      [curator_ids, propertyIds]
+    );
+
+    if (result.affectedRows === 0) {
+      connection.release();
+      return res.status(404).json({ error: "Ни один объект не был обновлен" });
+    }
+
+    console.log(`Перенаправлено ${result.affectedRows} объектов недвижимости, новые curator_ids: ${curator_ids}`);
+    connection.release();
+    res.json({ message: "Объекты недвижимости успешно перенаправлены", affectedRows: result.affectedRows });
+  } catch (error) {
+    console.error("Ошибка перенаправления объектов недвижимости:", error.message);
+    res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
+  }
+});
+
 // Запуск сервера
 app.listen(port, () => {
   console.log(`Сервер запущен на http://localhost:${port}`);
