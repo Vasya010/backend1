@@ -1753,7 +1753,7 @@ app.get("/public/properties", async (req, res) => {
 });
 
 
-// Публичный эндпоинт для получения списка районов
+// Public endpoint for districts
 app.get("/public/districts", async (req, res) => {
   let connection;
   try {
@@ -1761,38 +1761,31 @@ app.get("/public/districts", async (req, res) => {
     const [rows] = await connection.execute("SELECT id, name FROM districts");
     res.json(rows);
   } catch (error) {
-    console.error("Ошибка при получении районов:", {
-      message: error.message,
-      stack: error.stack,
-    });
-    res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
+    console.error("Error fetching districts:", error);
+    res.status(500).json({ error: "Internal server error" });
   } finally {
     if (connection) connection.release();
   }
 });
-
 // Публичный эндпоинт для получения списка ЖК
+// Public endpoint for JK (zhk)
 app.get("/public/jk", async (req, res) => {
   let connection;
   try {
     connection = await pool.getConnection();
-    const [rows] = await connection.execute("SELECT id, name, description, address FROM jk");
+    const [rows] = await connection.execute("SELECT id, name FROM jk");
     res.json(rows);
   } catch (error) {
-    console.error("Ошибка при получении ЖК:", {
-      message: error.message,
-      stack: error.stack,
-    });
-    res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
+    console.error("Error fetching JK:", error);
+    res.status(500).json({ error: "Internal server error" });
   } finally {
     if (connection) connection.release();
   }
 });
 
 // Публичный эндпоинт для получения типов недвижимости
+// Public endpoint for property types
 app.get("/public/properties/types", async (req, res) => {
-  // Поскольку отдельной таблицы для типов недвижимости нет,
-  // возвращаем уникальные значения type_id из таблицы properties
   let connection;
   try {
     connection = await pool.getConnection();
@@ -1800,11 +1793,8 @@ app.get("/public/properties/types", async (req, res) => {
     const types = rows.map(row => row.type_id);
     res.json(types);
   } catch (error) {
-    console.error("Ошибка при получении типов недвижимости:", {
-      message: error.message,
-      stack: error.stack,
-    });
-    res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
+    console.error("Error fetching property types:", error);
+    res.status(500).json({ error: "Internal server error" });
   } finally {
     if (connection) connection.release();
   }
@@ -1812,10 +1802,11 @@ app.get("/public/properties/types", async (req, res) => {
 
 
 // Публичный эндпоинт для получения микрорайонов
+// Public endpoint for subdistricts
 app.get("/public/subdistricts", async (req, res) => {
   const { district_id } = req.query;
   if (!district_id) {
-    return res.status(400).json({ error: "district_id обязателен" });
+    return res.status(400).json({ error: "district_id is required" });
   }
 
   let connection;
@@ -1825,14 +1816,10 @@ app.get("/public/subdistricts", async (req, res) => {
       "SELECT id, name FROM subdistricts WHERE district_id = ?",
       [district_id]
     );
-    console.log('Микрорайоны для district_id:', district_id, rows); // Для отладки
     res.json(rows);
   } catch (error) {
-    console.error("Ошибка при получении микрорайонов:", {
-      message: error.message,
-      stack: error.stack,
-    });
-    res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
+    console.error("Error fetching subdistricts:", error);
+    res.status(500).json({ error: "Internal server error" });
   } finally {
     if (connection) connection.release();
   }
@@ -1841,6 +1828,7 @@ app.get("/public/subdistricts", async (req, res) => {
 
 // Публичный эндпоинт для получения списка недвижимости с фильтрацией
 // Публичный эндпоинт для получения списка недвижимости с фильтрацией
+// Public endpoint for properties
 app.get("/public/properties", async (req, res) => {
   const {
     bid,
@@ -1868,37 +1856,26 @@ app.get("/public/properties", async (req, res) => {
                  FROM properties WHERE 1=1`;
     const params = [];
 
-    // Фильтр по ID
     if (bid && !isNaN(parseInt(bid))) {
       query += ` AND id = ?`;
       params.push(parseInt(bid));
     }
-
-    // Фильтр по ключевым словам
     if (titles) {
       query += ` AND (address LIKE ? OR description LIKE ?)`;
       params.push(`%${titles}%`, `%${titles}%`);
     }
-
-    // Фильтр по типу недвижимости
     if (ftype && ftype !== "all") {
       query += ` AND type_id = ?`;
       params.push(ftype);
     }
-
-    // Фильтр по ЖК
     if (fjk && fjk !== "all") {
       query += ` AND zhk_id = ?`;
       params.push(fjk);
     }
-
-    // Фильтр по серии
     if (fseria && fseria !== "all") {
       query += ` AND series = ?`;
       params.push(fseria);
     }
-
-    // Фильтр по состоянию (repair)
     if (fsost && fsost !== "all") {
       const repairMap = {
         "1": "ПСО",
@@ -1912,26 +1889,18 @@ app.get("/public/properties", async (req, res) => {
         params.push(repairMap[fsost]);
       }
     }
-
-    // Фильтр по количеству комнат
     if (room && room !== "") {
       query += ` AND rooms = ?`;
       params.push(room);
     }
-
-    // Фильтр по району
     if (frayon && frayon !== "all") {
       query += ` AND district_id = ?`;
       params.push(frayon);
     }
-
-    // Фильтр по субрайону
     if (fsubrayon && fsubrayon !== "all") {
       query += ` AND subdistrict_id = ?`;
       params.push(fsubrayon);
     }
-
-    // Фильтр по цене
     if (fprice && !isNaN(parseFloat(fprice))) {
       query += ` AND price >= ?`;
       params.push(parseFloat(fprice));
@@ -1940,14 +1909,10 @@ app.get("/public/properties", async (req, res) => {
       query += ` AND price <= ?`;
       params.push(parseFloat(fpriceto));
     }
-
-    // Фильтр по площади
     if (mkv && !isNaN(parseFloat(mkv))) {
       query += ` AND mkv >= ?`;
       params.push(parseFloat(mkv));
     }
-
-    // Фильтр по этажу
     if (fetaj && fetaj !== "all") {
       if (fetaj === "4") {
         query += ` AND etaj >= ?`;
@@ -1958,7 +1923,6 @@ app.get("/public/properties", async (req, res) => {
       }
     }
 
-    // Пагинация
     const offset = (parseInt(page) - 1) * parseInt(limit);
     query += ` LIMIT ? OFFSET ?`;
     params.push(parseInt(limit), offset);
@@ -1971,7 +1935,7 @@ app.get("/public/properties", async (req, res) => {
         try {
           parsedPhotos = JSON.parse(row.photos) || [];
         } catch (error) {
-          console.warn(`Ошибка парсинга photos для ID ${row.id}:`, error.message);
+          console.warn(`Error parsing photos for ID ${row.id}:`, error.message);
           parsedPhotos = [];
         }
       }
@@ -1998,11 +1962,11 @@ app.get("/public/properties", async (req, res) => {
 
     res.json(properties);
   } catch (error) {
-    console.error("Ошибка при получении недвижимости:", {
+    console.error("Error fetching properties:", {
       message: error.message,
       stack: error.stack,
     });
-    res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
+    res.status(500).json({ error: `Internal server error: ${error.message}` });
   } finally {
     if (connection) connection.release();
   }
