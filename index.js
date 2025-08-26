@@ -97,6 +97,9 @@ const dbConfig = {
 };
 const pool = mysql.createPool(dbConfig);
 
+
+app.use('/images', express.static(path.join(__dirname, 'public/images')));
+
 // JWT Authentication Middleware
 const authenticate = async (req, res, next) => {
   const token = req.headers.authorization?.split(" ")[1];
@@ -1697,17 +1700,106 @@ app.get("/api/listings", authenticate, async (req, res) => {
 });
 
 
-// Публичный эндпоинт для получения типов недвижимости
-// Публичный эндпоинт для получения списка недвижимости
+// Public endpoint for properties
 app.get("/public/properties", async (req, res) => {
+  const {
+    bid,
+    titles,
+    ftype,
+    fjk,
+    fseria,
+    fsost,
+    room,
+    frayon,
+    fsubrayon,
+    fprice,
+    fpriceto,
+    mkv,
+    fetaj,
+    page = 1,
+    limit = 30,
+  } = req.query;
+
   let connection;
   try {
     connection = await pool.getConnection();
-    const [rows] = await connection.execute(
-      `SELECT id, type_id, repair, series, zhk_id, price, mkv, rooms, district_id, subdistrict_id, 
-              address, description, status, etaj, etajnost, photos 
-       FROM properties`
-    );
+    let query = `SELECT id, type_id, repair, series, zhk_id, price, mkv, rooms, district_id, subdistrict_id, 
+                        address, description, status, etaj, etajnost, photos 
+                 FROM properties WHERE 1=1`;
+    const params = [];
+
+    if (bid && !isNaN(parseInt(bid))) {
+      query += ` AND id = ?`;
+      params.push(parseInt(bid));
+    }
+    if (titles) {
+      query += ` AND (address LIKE ? OR description LIKE ?)`;
+      params.push(`%${titles}%`, `%${titles}%`);
+    }
+    if (ftype && ftype !== "all") {
+      query += ` AND type_id = ?`;
+      params.push(ftype);
+    }
+    if (fjk && fjk !== "all") {
+      query += ` AND zhk_id = ?`;
+      params.push(fjk);
+    }
+    if (fseria && fseria !== "all") {
+      query += ` AND series = ?`;
+      params.push(fseria);
+    }
+    if (fsost && fsost !== "all") {
+      const repairMap = {
+        "1": "ПСО",
+        "2": "С отделкой",
+        "3": null,
+      };
+      if (fsost === "3") {
+        query += ` AND repair IS NULL`;
+      } else if (repairMap[fsost]) {
+        query += ` AND repair = ?`;
+        params.push(repairMap[fsost]);
+      }
+    }
+    if (room && room !== "") {
+      query += ` AND rooms = ?`;
+      params.push(room);
+    }
+    if (frayon && frayon !== "all") {
+      query += ` AND district_id = ?`;
+      params.push(frayon);
+    }
+    if (fsubrayon && fsubrayon !== "all") {
+      query += ` AND subdistrict_id = ?`;
+      params.push(fsubrayon);
+    }
+    if (fprice && !isNaN(parseFloat(fprice))) {
+      query += ` AND price >= ?`;
+      params.push(parseFloat(fprice));
+    }
+    if (fpriceto && !isNaN(parseFloat(fpriceto))) {
+      query += ` AND price <= ?`;
+      params.push(parseFloat(fpriceto));
+    }
+    if (mkv && !isNaN(parseFloat(mkv))) {
+      query += ` AND mkv >= ?`;
+      params.push(parseFloat(mkv));
+    }
+    if (fetaj && fetaj !== "all") {
+      if (fetaj === "4") {
+        query += ` AND etaj >= ?`;
+        params.push(4);
+      } else {
+        query += ` AND etaj = ?`;
+        params.push(parseInt(fetaj));
+      }
+    }
+
+    const offset = (parseInt(page) - 1) * parseInt(limit);
+    query += ` LIMIT ? OFFSET ?`;
+    params.push(parseInt(limit), offset);
+
+    const [rows] = await connection.execute(query, params);
 
     const properties = rows.map(row => {
       let parsedPhotos = [];
@@ -1715,7 +1807,7 @@ app.get("/public/properties", async (req, res) => {
         try {
           parsedPhotos = JSON.parse(row.photos) || [];
         } catch (error) {
-          console.warn(`Ошибка парсинга photos для ID ${row.id}:`, error.message);
+          console.warn(`Error parsing photos for ID ${row.id}:`, error.message);
           parsedPhotos = [];
         }
       }
@@ -1742,11 +1834,11 @@ app.get("/public/properties", async (req, res) => {
 
     res.json(properties);
   } catch (error) {
-    console.error("Ошибка при получении недвижимости:", {
+    console.error("Error fetching properties:", {
       message: error.message,
       stack: error.stack,
     });
-    res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
+    res.status(500).json({ error: `Internal server error: ${error.message}` });
   } finally {
     if (connection) connection.release();
   }
@@ -1783,25 +1875,21 @@ app.get("/public/jk", async (req, res) => {
   }
 });
 
-// Публичный эндпоинт для получения типов недвижимости
-// Public endpoint for property types
-app.get("/public/properties/types", async (req, res) => {
+// Public endpoint for JK (zhk)
+app.get("/public/jk", async (req, res) => {
   let connection;
   try {
     connection = await pool.getConnection();
-    const [rows] = await connection.execute("SELECT DISTINCT type_id FROM properties WHERE type_id IS NOT NULL");
-    const types = rows.map(row => row.type_id);
-    res.json(types);
+    const [rows] = await connection.execute("SELECT id, name FROM jk");
+    res.json(rows);
   } catch (error) {
-    console.error("Error fetching property types:", error);
+    console.error("Error fetching JK:", error);
     res.status(500).json({ error: "Internal server error" });
   } finally {
     if (connection) connection.release();
   }
 });
 
-
-// Публичный эндпоинт для получения микрорайонов
 // Public endpoint for subdistricts
 app.get("/public/subdistricts", async (req, res) => {
   const { district_id } = req.query;
