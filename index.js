@@ -1827,6 +1827,7 @@ app.get("/public/properties", async (req, res) => {
     fprice,
     fpriceto,
     mkv,
+    fetaj,
     page = 1,
     limit = 10,
   } = req.query;
@@ -1875,7 +1876,6 @@ app.get("/public/properties", async (req, res) => {
         "1": "ПСО",
         "2": "С отделкой",
         "3": null,
-        "4": "Элитное",
       };
       if (fsost === "3") {
         query += ` AND repair IS NULL`;
@@ -1917,6 +1917,17 @@ app.get("/public/properties", async (req, res) => {
     if (mkv && !isNaN(parseFloat(mkv))) {
       query += ` AND mkv >= ?`;
       params.push(parseFloat(mkv));
+    }
+
+    // Фильтр по этажу
+    if (fetaj && fetaj !== "all") {
+      if (fetaj === "4") {
+        query += ` AND etaj >= ?`;
+        params.push(4);
+      } else {
+        query += ` AND etaj = ?`;
+        params.push(parseInt(fetaj));
+      }
     }
 
     // Пагинация
