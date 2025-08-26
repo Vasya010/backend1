@@ -1687,6 +1687,131 @@ app.get("/api/listings", authenticate, async (req, res) => {
   }
 });
 
+
+// Публичный эндпоинт для получения типов недвижимости
+// Публичный эндпоинт для получения списка недвижимости
+app.get("/public/properties", async (req, res) => {
+  let connection;
+  try {
+    connection = await pool.getConnection();
+    const [rows] = await connection.execute(
+      `SELECT id, type_id, repair, series, zhk_id, price, mkv, rooms, district_id, subdistrict_id, 
+              address, description, status, etaj, etajnost, photos 
+       FROM properties`
+    );
+
+    const properties = rows.map(row => {
+      let parsedPhotos = [];
+      if (row.photos) {
+        try {
+          parsedPhotos = JSON.parse(row.photos) || [];
+        } catch (error) {
+          console.warn(`Ошибка парсинга photos для ID ${row.id}:`, error.message);
+          parsedPhotos = [];
+        }
+      }
+
+      return {
+        id: row.id,
+        type_id: row.type_id || null,
+        repair: row.repair || null,
+        series: row.series || null,
+        zhk_id: row.zhk_id || null,
+        price: row.price,
+        mkv: row.mkv,
+        rooms: row.rooms || null,
+        district_id: row.district_id || null,
+        subdistrict_id: row.subdistrict_id || null,
+        address: row.address || null,
+        description: row.description || null,
+        status: row.status || null,
+        etaj: row.etaj,
+        etajnost: row.etajnost,
+        photos: parsedPhotos.map(img => `https://s3.twcstorage.ru/${bucketName}/${img}`),
+      };
+    });
+
+    res.json(properties);
+  } catch (error) {
+    console.error("Ошибка при получении недвижимости:", {
+      message: error.message,
+      stack: error.stack,
+    });
+    res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
+
+app.get("/public/properties", async (req, res) => {
+  const { type_id, district_id, page = 1, limit = 10 } = req.query;
+  let connection;
+  try {
+    connection = await pool.getConnection();
+    let query = `SELECT id, type_id, repair, series, zhk_id, price, mkv, rooms, district_id, subdistrict_id, 
+                        address, description, status, etaj, etajnost, photos 
+                 FROM properties WHERE 1=1`;
+    const params = [];
+
+    if (type_id) {
+      query += ` AND type_id = ?`;
+      params.push(type_id);
+    }
+    if (district_id) {
+      query += ` AND district_id = ?`;
+      params.push(district_id);
+    }
+
+    const offset = (parseInt(page) - 1) * parseInt(limit);
+    query += ` LIMIT ? OFFSET ?`;
+    params.push(parseInt(limit), offset);
+
+    const [rows] = await connection.execute(query, params);
+
+    const properties = rows.map(row => {
+      let parsedPhotos = [];
+      if (row.photos) {
+        try {
+          parsedPhotos = JSON.parse(row.photos) || [];
+        } catch (error) {
+          console.warn(`Ошибка парсинга photos для ID ${row.id}:`, error.message);
+          parsedPhotos = [];
+        }
+      }
+
+      return {
+        id: row.id,
+        type_id: row.type_id || null,
+        repair: row.repair || null,
+        series: row.series || null,
+        zhk_id: row.zhk_id || null,
+        price: row.price,
+        mkv: row.mkv,
+        rooms: row.rooms || null,
+        district_id: row.district_id || null,
+        subdistrict_id: row.subdistrict_id || null,
+        address: row.address || null,
+        description: row.description || null,
+        status: row.status || null,
+        etaj: row.etaj,
+        etajnost: row.etajnost,
+        photos: parsedPhotos.map(img => `https://s3.twcstorage.ru/${bucketName}/${img}`),
+      };
+    });
+
+    res.json(properties);
+  } catch (error) {
+    console.error("Ошибка при получении недвижимости:", {
+      message: error.message,
+      stack: error.stack,
+    });
+    res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
 // Redirect Properties (Protected, SUPER_ADMIN only)444
 app.patch("/api/properties/redirect", authenticate, async (req, res) => {
   if (req.user.role !== "SUPER_ADMIN") {
