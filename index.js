@@ -1753,6 +1753,64 @@ app.get("/public/properties", async (req, res) => {
 });
 
 
+// Публичный эндпоинт для получения списка районов
+app.get("/public/districts", async (req, res) => {
+  let connection;
+  try {
+    connection = await pool.getConnection();
+    const [rows] = await connection.execute("SELECT id, name FROM districts");
+    res.json(rows);
+  } catch (error) {
+    console.error("Ошибка при получении районов:", {
+      message: error.message,
+      stack: error.stack,
+    });
+    res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
+// Публичный эндпоинт для получения списка ЖК
+app.get("/public/jk", async (req, res) => {
+  let connection;
+  try {
+    connection = await pool.getConnection();
+    const [rows] = await connection.execute("SELECT id, name, description, address FROM jk");
+    res.json(rows);
+  } catch (error) {
+    console.error("Ошибка при получении ЖК:", {
+      message: error.message,
+      stack: error.stack,
+    });
+    res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
+// Публичный эндпоинт для получения типов недвижимости
+app.get("/public/properties/types", async (req, res) => {
+  // Поскольку отдельной таблицы для типов недвижимости нет,
+  // возвращаем уникальные значения type_id из таблицы properties
+  let connection;
+  try {
+    connection = await pool.getConnection();
+    const [rows] = await connection.execute("SELECT DISTINCT type_id FROM properties WHERE type_id IS NOT NULL");
+    const types = rows.map(row => row.type_id);
+    res.json(types);
+  } catch (error) {
+    console.error("Ошибка при получении типов недвижимости:", {
+      message: error.message,
+      stack: error.stack,
+    });
+    res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
+
 // Публичный эндпоинт для получения списка недвижимости с фильтрацией
 app.get("/public/properties", async (req, res) => {
   const {
