@@ -1914,6 +1914,33 @@ app.get("/public/subdistricts", async (req, res) => {
 });
 
 
+// Public endpoint for property types
+app.get("/public/properties/types", async (req, res) => {
+  let connection;
+  try {
+    connection = await pool.getConnection();
+    const [rows] = await connection.execute(
+      "SELECT DISTINCT type_id FROM properties WHERE type_id IS NOT NULL"
+    );
+    if (!rows.length) {
+      console.warn("No property types found in database");
+      return res.status(200).json([]);
+    }
+    const types = rows.map(row => row.type_id);
+    console.log("Fetched property types:", types);
+    res.status(200).json(types);
+  } catch (error) {
+    console.error("Error fetching property types:", {
+      message: error.message,
+      stack: error.stack,
+    });
+    res.status(500).json({ error: `Internal server error: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
+
 // Публичный эндпоинт для получения списка недвижимости с фильтрацией
 // Публичный эндпоинт для получения списка недвижимости с фильтрацией
 // Public endpoint for properties
