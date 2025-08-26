@@ -1744,8 +1744,25 @@ app.get("/public/properties", async (req, res) => {
 });
 
 
+// Публичный эндпоинт для получения списка недвижимости с фильтрацией
 app.get("/public/properties", async (req, res) => {
-  const { type_id, district_id, page = 1, limit = 10 } = req.query;
+  const {
+    bid,
+    titles,
+    ftype,
+    fjk,
+    fseria, // Будем интерпретировать как series
+    fsost,  // Будем интерпретировать как repair
+    room,
+    frayon,
+    fsubrayon,
+    fprice,
+    fpriceto,
+    mkv,
+    page = 1,
+    limit = 10,
+  } = req.query;
+
   let connection;
   try {
     connection = await pool.getConnection();
@@ -1754,15 +1771,87 @@ app.get("/public/properties", async (req, res) => {
                  FROM properties WHERE 1=1`;
     const params = [];
 
-    if (type_id) {
-      query += ` AND type_id = ?`;
-      params.push(type_id);
-    }
-    if (district_id) {
-      query += ` AND district_id = ?`;
-      params.push(district_id);
+    // Фильтр по ID
+    if (bid && !isNaN(parseInt(bid))) {
+      query += ` AND id = ?`;
+      params.push(parseInt(bid));
     }
 
+    // Фильтр по ключевым словам (поиск по адресу и описанию)
+    if (titles) {
+      query += ` AND (address LIKE ? OR description LIKE ?)`;
+      params.push(`%${titles}%`, `%${titles}%`);
+    }
+
+    // Фильтр по типу недвижимости
+    if (ftype && ftype !== "all") {
+      query += ` AND type_id = ?`;
+      params.push(ftype);
+    }
+
+    // Фильтр по ЖК
+    if (fjk && fjk !== "all") {
+      query += ` AND zhk_id = ?`;
+      params.push(fjk);
+    }
+
+    // Фильтр по серии (fseria интерпретируем как series)
+    if (fseria && fseria !== "all") {
+      query += ` AND series = ?`;
+      params.push(fseria);
+    }
+
+    // Фильтр по состоянию (fsost интерпретируем как repair)
+    if (fsost && fsost !== "all") {
+      const repairMap = {
+        "1": "ПСО",
+        "2": "С отделкой",
+        "3": null, // Ремонт требуется (без ремонта)
+        "4": "Элитное", // Можно добавить, если в базе есть такое значение
+      };
+      if (fsost === "3") {
+        query += ` AND repair IS NULL`;
+      } else if (repairMap[fsost]) {
+        query += ` AND repair = ?`;
+        params.push(repairMap[fsost]);
+      }
+    }
+
+    // Фильтр по количеству комнат
+    if (room && room !== "") {
+      query += ` AND rooms = ?`;
+      params.push(room);
+    }
+
+    // Фильтр по району
+    if (frayon && frayon !== "all") {
+      query += ` AND district_id = ?`;
+      params.push(frayon);
+    }
+
+    // Фильтр по субрайону
+    if (fsubrayon && fsubrayon !== "all") {
+      query += ` AND subdistrict_id = ?`;
+      params.push(fsubrayon);
+    }
+
+    // Фильтр по цене
+    if (fprice && !isNaN(parseFloat(fprice))) {
+      query += ` AND price >= ?`;
+      params.push(parseFloat(fprice));
+    }
+    if (fpriceto && !isNaN(parseFloat(fpriceto))) {
+      query += ` AND price <= ?`;
+      params.push(parseFloat(fpriceto));
+    }
+
+    // Фильтр по площади
+    if (mkv && !isNaN(parseFloat(mkv))) {
+      query += ` AND mkv >= ?`;
+      params.push(parseFloat(mkv));
+    }
+
+    // Пагинация
     const offset = (parseInt(page) - 1) * parseInt(limit);
     query += ` LIMIT ? OFFSET ?`;
     params.push(parseInt(limit), offset);
