@@ -1946,7 +1946,6 @@ app.get("/public/properties/types", async (req, res) => {
   }
 });
 
-
 // Endpoint для списка недвижимости
 app.get("/public/properties", async (req, res) => {
   const {
@@ -1970,6 +1969,14 @@ app.get("/public/properties", async (req, res) => {
   let connection;
   try {
     connection = await pool.getConnection();
+
+    // Проверка существования таблицы
+    const [tables] = await connection.execute("SHOW TABLES LIKE 'properties'");
+    if (!tables.length) {
+      console.warn("Таблица properties не найдена");
+      return res.status(200).json([]);
+    }
+
     let query = `SELECT id, type_id, repair, series, zhk_id, price, mkv, rooms, district_id, subdistrict_id, 
                         address, description, status, etaj, etajnost, photos 
                  FROM properties WHERE 1=1`;
@@ -1989,36 +1996,34 @@ app.get("/public/properties", async (req, res) => {
     }
     if (fjk && fjk !== "all") {
       query += ` AND zhk_id = ?`;
-      params.push(fjk); // zhk_id — varchar
+      params.push(fjk);
     }
     if (fseria && fseria !== "all") {
       query += ` AND series = ?`;
       params.push(fseria);
     }
     if (fsost && fsost !== "all") {
-      const repairMap = {
-        "1": "ПСО",
-        "2": "С отделкой",
-        "3": null,
-      };
       if (fsost === "3") {
         query += ` AND repair IS NULL`;
-      } else if (repairMap[fsost]) {
+      } else if (fsost === "1") {
         query += ` AND repair = ?`;
-        params.push(repairMap[fsost]);
+        params.push("ПСО");
+      } else if (fsost === "2") {
+        query += ` AND repair = ?`;
+        params.push("С отделкой");
       }
     }
     if (room && room !== "") {
       query += ` AND rooms = ?`;
-      params.push(room); // rooms — varchar
+      params.push(room);
     }
     if (frayon && frayon !== "all") {
       query += ` AND district_id = ?`;
-      params.push(frayon); // district_id — varchar
+      params.push(frayon);
     }
     if (fsubrayon && fsubrayon !== "all") {
       query += ` AND subdistrict_id = ?`;
-      params.push(fsubrayon); // subdistrict_id — varchar55
+      params.push(fsubrayon);
     }
     if (fprice && !isNaN(parseFloat(fprice))) {
       query += ` AND price >= ?`;
@@ -2044,7 +2049,11 @@ app.get("/public/properties", async (req, res) => {
 
     const offset = (parseInt(page) - 1) * parseInt(limit);
     query += ` LIMIT ? OFFSET ?`;
-    params.push(parseInt(limit), offset);
+    params.push(parseInt(limit), parseInt(offset));
+
+    // Логирование запроса и параметров для отладки
+    console.log("SQL запрос:", query);
+    console.log("Параметры:", params);
 
     const [rows] = await connection.execute(query, params);
 
@@ -2083,13 +2092,14 @@ app.get("/public/properties", async (req, res) => {
       message: error.message,
       stack: error.stack,
       query: req.query,
+      sqlQuery: query,
+      sqlParams: params,
     });
     res.status(500).json({ error: `Ошибка сервера: ${error.message}` });
   } finally {
     if (connection) connection.release();
   }
 });
-
 // Redirect Properties (Protected, SUPER_ADMIN only)444
 app.patch("/api/properties/redirect", authenticate, async (req, res) => {
   if (req.user.role !== "SUPER_ADMIN") {
