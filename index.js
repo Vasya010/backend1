@@ -1687,7 +1687,7 @@ app.get("/api/listings", authenticate, async (req, res) => {
   }
 });
 
-// Redirect Properties (Protected, SUPER_ADMIN only)
+// Redirect Properties (Protected, SUPER_ADMIN only)444
 app.patch("/api/properties/redirect", authenticate, async (req, res) => {
   if (req.user.role !== "SUPER_ADMIN") {
     return res.status(403).json({ error: "Доступ запрещён: требуется роль SUPER_ADMIN" });
