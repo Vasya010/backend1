@@ -29,8 +29,17 @@ const s3Client = new S3Client({
 
 const bucketName = process.env.S3_BUCKET || "a2c31109-3cf2c97b-aca1-42b0-a822-3e0ade279447";
 
-// Middleware
-app.use(cors());
+
+
+
+// CORS Middleware with specific configuration
+app.use(cors({
+  origin: ['https://alatooned.ru', 'http://cs51703.tw1.ru'],
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+}));
+
+// JSON Middleware
 app.use(express.json());
 
 // Global Error Handler
