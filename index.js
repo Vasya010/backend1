@@ -1929,33 +1929,36 @@ app.get("/public/properties", async (req, res) => {
     const [rows] = await connection.execute(query, params);
 
     const properties = rows.map(row => {
-      let parsedPhotos = [];
-      try {
-        parsedPhotos = row.photos ? JSON.parse(row.photos) : [];
-      } catch (error) {
-        console.warn(`Ошибка парсинга photos для ID ${row.id}:`, error.message);
-        parsedPhotos = [];
-      }
+  let parsedPhotos = [];
+  try {
+    parsedPhotos = row.photos ? JSON.parse(row.photos) : [];
+  } catch (error) {
+    console.warn(`Ошибка парсинга photos для ID ${row.id}:`, error.message);
+    parsedPhotos = [];
+  }
 
-      return {
-        id: row.id,
-        type_id: row.type_id || null,
-        repair: row.repair || null,
-        series: row.series || null,
-        zhk_id: row.zhk_id || null,
-        price: row.price || null,
-        mkv: row.mkv || null,
-        rooms: row.rooms || null,
-        district_id: row.district_id || null,
-        subdistrict_id: row.subdistrict_id || null,
-        address: row.address || null,
-        description: row.description || null,
-        status: row.status || null,
-        etaj: row.etaj || null,
-        etajnost: row.etajnost || null,
-        photos: parsedPhotos.map(img => `https://s3.twcstorage.ru/${bucketName}/${img}`)
-      };
-    });
+  return {
+    id: row.id,
+    type_id: row.type_id || null,
+    repair: row.repair || null,
+    series: row.series || null,
+    zhk_id: row.zhk_id || null,
+    price: row.price || null,
+    mkv: row.mkv || null,
+    rooms: row.rooms || null,
+    district_id: row.district_id || null,
+    subdistrict_id: row.subdistrict_id || null,
+    address: row.address || null,
+    description: row.description || null,
+    status: row.status || null,
+    etaj: row.etaj || null,
+    etajnost: row.etajnost || null,
+    photos: parsedPhotos.map(
+      img => `https://s3.twcstorage.ru/${bucketName}/${img}`
+    )
+  };
+});
+
 
     res.status(200).json(properties);
   } catch (error) {
