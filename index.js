@@ -36,7 +36,7 @@ app.use(express.json());
 // Global Error Handler
 app.use((err, req, res, next) => {
   console.error("Global error:", err.stack);
-  res.status(500).json({ error: `Internal server error: ${err.message}` });
+  res.status(500).json({ error: `Внутренняя ошибка сервера: ${err.message}` });
 });
 
 // Multer Configuration
@@ -52,9 +52,9 @@ const upload = multer({
       return cb(null, true);
     }
     console.error(`File ${file.originalname} rejected: invalid type`);
-    cb(new Error("Only images (jpeg, jpg, png) and documents (pdf, doc, docx) are allowed"));
+    cb(new Error("Только изображения (jpeg, jpg, png) и документы (pdf, doc, docx) разрешены"));
   },
-  limits: { fileSize: 5 * 1024 * 1024 }, // 5 MB
+  limits: { fileSize: 15 * 1024 * 1024 }, // Лимит 15 МБ
 });
 
 // MySQL Connection Pool
@@ -73,7 +73,7 @@ const authenticate = async (req, res, next) => {
   const token = req.headers.authorization?.split(" ")[1];
   if (!token) {
     console.error("Authentication error: Token missing");
-    return res.status(401).json({ error: "Token missing" });
+    return res.status(401).json({ error: "Токен отсутствует" });
   }
   try {
     const decoded = jwt.verify(token, jwtSecret);
@@ -86,14 +86,14 @@ const authenticate = async (req, res, next) => {
 
     if (users.length === 0) {
       console.error("Authentication error: Invalid token for user ID:", decoded.id);
-      return res.status(401).json({ error: "Invalid token" });
+      return res.status(401).json({ error: "Недействительный токен" });
     }
 
     req.user = { ...decoded, first_name: users[0].first_name, last_name: users[0].last_name };
     next();
   } catch (error) {
     console.error("Authentication error:", error.message);
-    res.status(401).json({ error: "Invalid token" });
+    res.status(401).json({ error: "Недействительный токен" });
   }
 };
 
@@ -162,7 +162,6 @@ async function testDatabaseConnection() {
         ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
       `);
     } else {
-      // Проверка и переименование столбца condition в repair
       const [conditionColumns] = await connection.execute(
         "SHOW COLUMNS FROM properties LIKE 'condition'"
       );
@@ -171,7 +170,6 @@ async function testDatabaseConnection() {
         await connection.execute("ALTER TABLE properties CHANGE COLUMN `condition` `repair` VARCHAR(255) DEFAULT NULL");
       }
 
-      // Проверка и переименование столбца room в rooms
       const [roomColumns] = await connection.execute(
         "SHOW COLUMNS FROM properties LIKE 'room'"
       );
@@ -266,7 +264,7 @@ app.post("/api/admin/login", async (req, res) => {
   const { email, password } = req.body;
   if (!email || !password) {
     console.error("Login error: Missing email or password");
-    return res.status(400).json({ error: "Email and password are required" });
+    return res.status(400).json({ error: "Email и пароль обязательны" });
   }
 
   let connection;
@@ -278,13 +276,13 @@ app.post("/api/admin/login", async (req, res) => {
     );
 
     if (rows.length === 0) {
-      return res.status(401).json({ error: "Invalid email or user not found" });
+      return res.status(401).json({ error: "Недействительный email или пользователь не найден" });
     }
 
     const user = rows[0];
     const isPasswordValid = await bcrypt.compare(password, user.password);
     if (!isPasswordValid) {
-      return res.status(401).json({ error: "Invalid password" });
+      return res.status(401).json({ error: "Недействительный пароль" });
     }
 
     const token = jwt.sign({ id: user.id, role: user.role }, jwtSecret, { expiresIn: "30d" });
@@ -302,10 +300,10 @@ app.post("/api/admin/login", async (req, res) => {
       token,
     };
 
-    res.json({ message: "Authorization successful", user: userResponse, token });
+    res.json({ message: "Авторизация успешна", user: userResponse, token });
   } catch (error) {
     console.error("Login error:", error.message);
-    res.status(500).json({ error: `Internal server error: ${error.message}` });
+    res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
   } finally {
     if (connection) connection.release();
   }
@@ -317,10 +315,10 @@ app.post("/api/logout", authenticate, async (req, res) => {
   try {
     connection = await pool.getConnection();
     await connection.execute("UPDATE users1 SET token = NULL WHERE id = ?", [req.user.id]);
-    res.json({ message: "Logout successful" });
+    res.json({ message: "Выход успешен" });
   } catch (error) {
     console.error("Logout error:", error.message);
-    res.status(500).json({ error: `Internal server error: ${error.message}` });
+    res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
   } finally {
     if (connection) connection.release();
   }
@@ -329,7 +327,7 @@ app.post("/api/logout", authenticate, async (req, res) => {
 // Get All Users (Protected, SUPER_ADMIN only)
 app.get("/api/users", authenticate, async (req, res) => {
   if (req.user.role !== "SUPER_ADMIN") {
-    return res.status(403).json({ error: "Access denied: SUPER_ADMIN role required" });
+    return res.status(403).json({ error: "Доступ запрещён: требуется роль SUPER_ADMIN" });
   }
 
   let connection;
@@ -348,7 +346,7 @@ app.get("/api/users", authenticate, async (req, res) => {
     );
   } catch (error) {
     console.error("Error retrieving users:", error.message);
-    res.status(500).json({ error: `Internal server error: ${error.message}` });
+    res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
   } finally {
     if (connection) connection.release();
   }
@@ -357,18 +355,18 @@ app.get("/api/users", authenticate, async (req, res) => {
 // Create New User (Protected, SUPER_ADMIN only)
 app.post("/api/users", authenticate, upload.single("photo"), async (req, res) => {
   if (req.user.role !== "SUPER_ADMIN") {
-    return res.status(403).json({ error: "Access denied: SUPER_ADMIN role required" });
+    return res.status(403).json({ error: "Доступ запрещён: требуется роль SUPER_ADMIN" });
   }
 
   const { email, name, phone, role, password } = req.body;
   const photo = req.file;
 
   if (!email || !name || !phone || !role || !password) {
-    return res.status(400).json({ error: "All fields (email, name, phone, role, password) are required" });
+    return res.status(400).json({ error: "Все поля (email, name, phone, role, password) обязательны" });
   }
 
   if (!VALID_ROLES.includes(role)) {
-    return res.status(400).json({ error: `Invalid role. Must be one of: ${VALID_ROLES.join(', ')}` });
+    return res.status(400).json({ error: `Недействительная роль. Должна быть одной из: ${VALID_ROLES.join(', ')}` });
   }
 
   const [first_name, last_name = ""] = name.split(" ");
@@ -380,7 +378,7 @@ app.post("/api/users", authenticate, upload.single("photo"), async (req, res) =>
     connection = await pool.getConnection();
     const [existingUser] = await connection.execute("SELECT id FROM users1 WHERE email = ?", [email]);
     if (existingUser.length > 0) {
-      return res.status(400).json({ error: "User with this email already exists" });
+      return res.status(400).json({ error: "Пользователь с таким email уже существует" });
     }
 
     if (photo) {
@@ -417,7 +415,7 @@ app.post("/api/users", authenticate, upload.single("photo"), async (req, res) =>
     res.json(newUser);
   } catch (error) {
     console.error("Error creating user:", error.message);
-    res.status(500).json({ error: `Internal server error: ${error.message}` });
+    res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
   } finally {
     if (connection) connection.release();
   }
@@ -426,7 +424,7 @@ app.post("/api/users", authenticate, upload.single("photo"), async (req, res) =>
 // Update User (Protected, SUPER_ADMIN only)
 app.put("/api/users/:id", authenticate, upload.single("photo"), async (req, res) => {
   if (req.user.role !== "SUPER_ADMIN") {
-    return res.status(403).json({ error: "Access denied: SUPER_ADMIN role required" });
+    return res.status(403).json({ error: "Доступ запрещён: требуется роль SUPER_ADMIN" });
   }
 
   const { id } = req.params;
@@ -434,11 +432,11 @@ app.put("/api/users/:id", authenticate, upload.single("photo"), async (req, res)
   const photo = req.file;
 
   if (!email || !name || !phone || !role) {
-    return res.status(400).json({ error: "All fields (email, name, phone, role) are required" });
+    return res.status(400).json({ error: "Все поля (email, name, phone, role) обязательны" });
   }
 
   if (!VALID_ROLES.includes(role)) {
-    return res.status(400).json({ error: `Invalid role. Must be one of: ${VALID_ROLES.join(', ')}` });
+    return res.status(400).json({ error: `Недействительная роль. Должна быть одной из: ${VALID_ROLES.join(', ')}` });
   }
 
   const [first_name, last_name = ""] = name.split(" ");
@@ -450,12 +448,12 @@ app.put("/api/users/:id", authenticate, upload.single("photo"), async (req, res)
     connection = await pool.getConnection();
     const [existingUsers] = await connection.execute("SELECT profile_picture FROM users1 WHERE id = ?", [id]);
     if (existingUsers.length === 0) {
-      return res.status(404).json({ error: "User not found" });
+      return res.status(404).json({ error: "Пользователь не найден" });
     }
 
     const [emailCheck] = await connection.execute("SELECT id FROM users1 WHERE email = ? AND id != ?", [email, id]);
     if (emailCheck.length > 0) {
-      return res.status(400).json({ error: "User with this email already exists" });
+      return res.status(400).json({ error: "Пользователь с таким email уже существует" });
     }
 
     profile_picture = existingUsers[0].profile_picture;
@@ -496,7 +494,7 @@ app.put("/api/users/:id", authenticate, upload.single("photo"), async (req, res)
     res.json(updatedUser);
   } catch (error) {
     console.error("Error updating user:", error.message);
-    res.status(500).json({ error: `Internal server error: ${error.message}` });
+    res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
   } finally {
     if (connection) connection.release();
   }
@@ -505,7 +503,7 @@ app.put("/api/users/:id", authenticate, upload.single("photo"), async (req, res)
 // Delete User (Protected, SUPER_ADMIN only)
 app.delete("/api/users/:id", authenticate, async (req, res) => {
   if (req.user.role !== "SUPER_ADMIN") {
-    return res.status(403).json({ error: "Access denied: SUPER_ADMIN role required" });
+    return res.status(403).json({ error: "Доступ запрещён: требуется роль SUPER_ADMIN" });
   }
 
   const { id } = req.params;
@@ -515,7 +513,7 @@ app.delete("/api/users/:id", authenticate, async (req, res) => {
     connection = await pool.getConnection();
     const [users] = await connection.execute("SELECT profile_picture FROM users1 WHERE id = ?", [id]);
     if (users.length === 0) {
-      return res.status(404).json({ error: "User not found" });
+      return res.status(404).json({ error: "Пользователь не найден" });
     }
 
     if (users[0].profile_picture) {
@@ -527,10 +525,10 @@ app.delete("/api/users/:id", authenticate, async (req, res) => {
     }
 
     await connection.execute("DELETE FROM users1 WHERE id = ?", [id]);
-    res.json({ message: "User successfully deleted" });
+    res.json({ message: "Пользователь успешно удалён" });
   } catch (error) {
     console.error("Error deleting user:", error.message);
-    res.status(500).json({ error: `Internal server error: ${error.message}` });
+    res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
   } finally {
     if (connection) connection.release();
   }
@@ -541,11 +539,114 @@ app.get("/api/jk", authenticate, async (req, res) => {
   let connection;
   try {
     connection = await pool.getConnection();
-    const [rows] = await connection.execute("SELECT id, name FROM jk");
+    const [rows] = await connection.execute("SELECT id, name, description, address FROM jk");
     res.json(rows);
   } catch (error) {
     console.error("Error retrieving JK:", error.message);
-    res.status(500).json({ error: `Internal server error: ${error.message}` });
+    res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
+// Create JK (Protected, SUPER_ADMIN only)
+app.post("/api/jk", authenticate, async (req, res) => {
+  if (req.user.role !== "SUPER_ADMIN") {
+    return res.status(403).json({ error: "Доступ запрещён: требуется роль SUPER_ADMIN" });
+  }
+
+  const { name, description, address } = req.body;
+  if (!name) {
+    return res.status(400).json({ error: "Название обязательно" });
+  }
+
+  let connection;
+  try {
+    connection = await pool.getConnection();
+    const [existingJk] = await connection.execute("SELECT id FROM jk WHERE name = ?", [name]);
+    if (existingJk.length > 0) {
+      return res.status(400).json({ error: "ЖК с таким названием уже существует" });
+    }
+
+    const [result] = await connection.execute(
+      "INSERT INTO jk (name, description, address) VALUES (?, ?, ?)",
+      [name, description || null, address || null]
+    );
+
+    res.json({ id: result.insertId, name, description, address });
+  } catch (error) {
+    console.error("Error creating JK:", error.message);
+    res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
+// Update JK (Protected, SUPER_ADMIN only)
+app.put("/api/jk/:id", authenticate, async (req, res) => {
+  if (req.user.role !== "SUPER_ADMIN") {
+    return res.status(403).json({ error: "Доступ запрещён: требуется роль SUPER_ADMIN" });
+  }
+
+  const { id } = req.params;
+  const { name, description, address } = req.body;
+  if (!name) {
+    return res.status(400).json({ error: "Название обязательно" });
+  }
+
+  let connection;
+  try {
+    connection = await pool.getConnection();
+    const [existingJk] = await connection.execute("SELECT id FROM jk WHERE id = ?", [id]);
+    if (existingJk.length === 0) {
+      return res.status(404).json({ error: "ЖК не найден" });
+    }
+
+    const [nameCheck] = await connection.execute("SELECT id FROM jk WHERE name = ? AND id != ?", [name, id]);
+    if (nameCheck.length > 0) {
+      return res.status(400).json({ error: "ЖК с таким названием уже существует" });
+    }
+
+    await connection.execute(
+      "UPDATE jk SET name = ?, description = ?, address = ? WHERE id = ?",
+      [name, description || null, address || null, id]
+    );
+
+    res.json({ id: parseInt(id), name, description, address });
+  } catch (error) {
+    console.error("Error updating JK:", error.message);
+    res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
+// Delete JK (Protected, SUPER_ADMIN only)
+app.delete("/api/jk/:id", authenticate, async (req, res) => {
+  if (req.user.role !== "SUPER_ADMIN") {
+    return res.status(403).json({ error: "Доступ запрещён: требуется роль SUPER_ADMIN" });
+  }
+
+  const { id } = req.params;
+
+  let connection;
+  try {
+    connection = await pool.getConnection();
+    const [existingJk] = await connection.execute("SELECT id FROM jk WHERE id = ?", [id]);
+    if (existingJk.length === 0) {
+      return res.status(404).json({ error: "ЖК не найден" });
+    }
+
+    const [linkedProperties] = await connection.execute("SELECT id FROM properties WHERE zhk_id = ?", [id]);
+    if (linkedProperties.length > 0) {
+      return res.status(400).json({ error: "Нельзя удалить ЖК, связанный с объектами недвижимости" });
+    }
+
+    await connection.execute("DELETE FROM jk WHERE id = ?", [id]);
+    res.json({ message: "ЖК успешно удалён" });
+  } catch (error) {
+    console.error("Error deleting JK:", error.message);
+    res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
   } finally {
     if (connection) connection.release();
   }
@@ -560,7 +661,7 @@ app.get("/api/districts", authenticate, async (req, res) => {
     res.json(rows);
   } catch (error) {
     console.error("Error retrieving districts:", error.message);
-    res.status(500).json({ error: `Internal server error: ${error.message}` });
+    res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
   } finally {
     if (connection) connection.release();
   }
@@ -570,7 +671,7 @@ app.get("/api/districts", authenticate, async (req, res) => {
 app.get("/api/subdistricts", authenticate, async (req, res) => {
   const { district_id } = req.query;
   if (!district_id) {
-    return res.status(400).json({ error: "district_id is required" });
+    return res.status(400).json({ error: "district_id обязателен" });
   }
 
   let connection;
@@ -583,7 +684,247 @@ app.get("/api/subdistricts", authenticate, async (req, res) => {
     res.json(rows);
   } catch (error) {
     console.error("Error retrieving subdistricts:", error.message);
-    res.status(500).json({ error: `Internal server error: ${error.message}` });
+    res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
+// Get All Districts and Subdistricts
+app.get("/api/raions", authenticate, async (req, res) => {
+  let connection;
+  try {
+    connection = await pool.getConnection();
+    const [districts] = await connection.execute("SELECT id, name, NULL AS parentRaionId FROM districts");
+    const [subdistricts] = await connection.execute("SELECT id, name, district_id AS parentRaionId FROM subdistricts");
+
+    const raions = [
+      ...districts.map(row => ({ id: row.id, name: row.name, parentRaionId: null, isRaion: true })),
+      ...subdistricts.map(row => ({ id: row.id, name: row.name, parentRaionId: row.parentRaionId, isRaion: false })),
+    ];
+
+    res.json(raions);
+  } catch (error) {
+    console.error("Error retrieving districts and subdistricts:", error.message);
+    res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
+// Create District (Protected, SUPER_ADMIN only)
+app.post("/api/raions", authenticate, async (req, res) => {
+  if (req.user.role !== "SUPER_ADMIN") {
+    return res.status(403).json({ error: "Доступ запрещён: требуется роль SUPER_ADMIN" });
+  }
+
+  const { name } = req.body;
+  if (!name) {
+    return res.status(400).json({ error: "Название обязательно" });
+  }
+
+  let connection;
+  try {
+    connection = await pool.getConnection();
+    const [existingDistrict] = await connection.execute("SELECT id FROM districts WHERE name = ?", [name]);
+    if (existingDistrict.length > 0) {
+      return res.status(400).json({ error: "Район с таким названием уже существует" });
+    }
+
+    const [result] = await connection.execute(
+      "INSERT INTO districts (name) VALUES (?)",
+      [name]
+    );
+
+    res.json({ id: result.insertId, name, parentRaionId: null, isRaion: true });
+  } catch (error) {
+    console.error("Ошибка при создании района:", error.message);
+    res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
+// Update District (Protected, SUPER_ADMIN only)
+app.put("/api/raions/:id", authenticate, async (req, res) => {
+  if (req.user.role !== "SUPER_ADMIN") {
+    return res.status(403).json({ error: "Доступ запрещён: требуется роль SUPER_ADMIN" });
+  }
+
+  const { id } = req.params;
+  const { name } = req.body;
+  if (!name) {
+    return res.status(400).json({ error: "Название обязательно" });
+  }
+
+  let connection;
+  try {
+    connection = await pool.getConnection();
+    const [existingDistrict] = await connection.execute("SELECT id FROM districts WHERE id = ?", [id]);
+    if (existingDistrict.length === 0) {
+      return res.status(404).json({ error: "Район не найден" });
+    }
+
+    const [nameCheck] = await connection.execute("SELECT id FROM districts WHERE name = ? AND id != ?", [name, id]);
+    if (nameCheck.length > 0) {
+      return res.status(400).json({ error: "Район с таким названием уже существует" });
+    }
+
+    await connection.execute("UPDATE districts SET name = ? WHERE id = ?", [name, id]);
+    res.json({ id: parseInt(id), name, parentRaionId: null, isRaion: true });
+  } catch (error) {
+    console.error("Ошибка при обновлении района:", error.message);
+    res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
+// Delete District (Protected, SUPER_ADMIN only)
+app.delete("/api/raions/:id", authenticate, async (req, res) => {
+  if (req.user.role !== "SUPER_ADMIN") {
+    return res.status(403).json({ error: "Доступ запрещён: требуется роль SUPER_ADMIN" });
+  }
+
+  const { id } = req.params;
+
+  let connection;
+  try {
+    connection = await pool.getConnection();
+    const [existingDistrict] = await connection.execute("SELECT id FROM districts WHERE id = ?", [id]);
+    if (existingDistrict.length === 0) {
+      return res.status(404).json({ error: "Район не найден" });
+    }
+
+    const [linkedProperties] = await connection.execute("SELECT id FROM properties WHERE district_id = ?", [id]);
+    if (linkedProperties.length > 0) {
+      return res.status(400).json({ error: "Нельзя удалить район, связанный с объектами недвижимости" });
+    }
+
+    await connection.execute("DELETE FROM districts WHERE id = ?", [id]);
+    res.json({ message: "Район успешно удалён" });
+  } catch (error) {
+    console.error("Ошибка при удалении района:", error.message);
+    res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
+// Create Subdistrict (Protected, SUPER_ADMIN only)
+app.post("/api/subraions", authenticate, async (req, res) => {
+  if (req.user.role !== "SUPER_ADMIN") {
+    return res.status(403).json({ error: "Доступ запрещён: требуется роль SUPER_ADMIN" });
+  }
+
+  const { name, parentRaionId } = req.body;
+  if (!name || !parentRaionId) {
+    return res.status(400).json({ error: "Название и ID родительского района обязательны" });
+  }
+
+  let connection;
+  try {
+    connection = await pool.getConnection();
+    const [districtCheck] = await connection.execute("SELECT id FROM districts WHERE id = ?", [parentRaionId]);
+    if (districtCheck.length === 0) {
+      return res.status(400).json({ error: "Недействительный ID родительского района" });
+    }
+
+    const [existingSubdistrict] = await connection.execute(
+      "SELECT id FROM subdistricts WHERE name = ? AND district_id = ?",
+      [name, parentRaionId]
+    );
+    if (existingSubdistrict.length > 0) {
+      return res.status(400).json({ error: "Микрорайон с таким названием уже существует в этом районе" });
+    }
+
+    const [result] = await connection.execute(
+      "INSERT INTO subdistricts (name, district_id) VALUES (?, ?)",
+      [name, parentRaionId]
+    );
+
+    res.json({ id: result.insertId, name, parentRaionId, isRaion: false });
+  } catch (error) {
+    console.error("Ошибка при создании микрорайона:", error.message);
+    res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
+// Update Subdistrict (Protected, SUPER_ADMIN only)
+app.put("/api/subraions/:id", authenticate, async (req, res) => {
+  if (req.user.role !== "SUPER_ADMIN") {
+    return res.status(403).json({ error: "Доступ запрещён: требуется роль SUPER_ADMIN" });
+  }
+
+  const { id } = req.params;
+  const { name, parentRaionId } = req.body;
+  if (!name || !parentRaionId) {
+    return res.status(400).json({ error: "Название и ID родительского района обязательны" });
+  }
+
+  let connection;
+  try {
+    connection = await pool.getConnection();
+    const [subdistrictCheck] = await connection.execute("SELECT id FROM subdistricts WHERE id = ?", [id]);
+    if (subdistrictCheck.length === 0) {
+      return res.status(404).json({ error: "Микрорайон не найден" });
+    }
+
+    const [districtCheck] = await connection.execute("SELECT id FROM districts WHERE id = ?", [parentRaionId]);
+    if (districtCheck.length === 0) {
+      return res.status(400).json({ error: "Недействительный ID родительского района" });
+    }
+
+    const [nameCheck] = await connection.execute(
+      "SELECT id FROM subdistricts WHERE name = ? AND district_id = ? AND id != ?",
+      [name, parentRaionId, id]
+    );
+    if (nameCheck.length > 0) {
+      return res.status(400).json({ error: "Микрорайон с таким названием уже существует в этом районе" });
+    }
+
+    await connection.execute(
+      "UPDATE subdistricts SET name = ?, district_id = ? WHERE id = ?",
+      [name, parentRaionId, id]
+    );
+
+    res.json({ id: parseInt(id), name, parentRaionId, isRaion: false });
+  } catch (error) {
+    console.error("Ошибка при обновлении микрорайона:", error.message);
+    res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
+// Delete Subdistrict (Protected, SUPER_ADMIN only)
+app.delete("/api/subraions/:id", authenticate, async (req, res) => {
+  if (req.user.role !== "SUPER_ADMIN") {
+    return res.status(403).json({ error: "Доступ запрещён: требуется роль SUPER_ADMIN" });
+  }
+
+  const { id } = req.params;
+
+  let connection;
+  try {
+    connection = await pool.getConnection();
+    const [subdistrictCheck] = await connection.execute("SELECT id FROM subdistricts WHERE id = ?", [id]);
+    if (subdistrictCheck.length === 0) {
+      return res.status(404).json({ error: "Микрорайон не найден" });
+    }
+
+    const [linkedProperties] = await connection.execute("SELECT id FROM properties WHERE subdistrict_id = ?", [id]);
+    if (linkedProperties.length > 0) {
+      return res.status(400).json({ error: "Нельзя удалить микрорайон, связанный с объектами недвижимости" });
+    }
+
+    await connection.execute("DELETE FROM subdistricts WHERE id = ?", [id]);
+    res.json({ message: "Микрорайон успешно удалён" });
+  } catch (error) {
+    console.error("Ошибка при удалении микрорайона:", error.message);
+    res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
   } finally {
     if (connection) connection.release();
   }
@@ -595,7 +936,7 @@ app.post("/api/properties", authenticate, upload.fields([
   { name: "document", maxCount: 1 },
 ]), async (req, res) => {
   if (!["SUPER_ADMIN", "REALTOR"].includes(req.user.role)) {
-    return res.status(403).json({ error: "Access denied: SUPER_ADMIN or REALTOR role required" });
+    return res.status(403).json({ error: "Доступ запрещён: требуется роль SUPER_ADMIN или REALTOR" });
   }
 
   const {
@@ -634,48 +975,33 @@ app.post("/api/properties", authenticate, upload.fields([
     mimetype: req.files["document"][0].mimetype,
   } : null;
 
-  // Validate required fields
   if (!type_id || !price || !rukprice || !mkv || !address || !etaj || !etajnost) {
-    return res.status(400).json({ error: "All required fields (type_id, price, rukprice, mkv, address, etaj, etajnost) must be provided" });
+    return res.status(400).json({ error: "Все обязательные поля (type_id, price, rukprice, mkv, address, etaj, etajnost) должны быть заполнены" });
   }
 
   if (isNaN(parseFloat(price)) || isNaN(parseFloat(rukprice)) || isNaN(parseFloat(mkv)) || isNaN(parseInt(etaj)) || isNaN(parseInt(etajnost))) {
-    return res.status(400).json({ error: "Fields price, rukprice, mkv, etaj, etajnost must be numeric" });
+    return res.status(400).json({ error: "Поля price, rukprice, mkv, etaj, etajnost должны быть числами" });
   }
 
-  // Validate repair
   if (type_id === "Квартира" && repair && !["ПСО", "С отделкой"].includes(repair)) {
-    return res.status(400).json({ error: "Invalid repair value. Must be one of: ПСО, С отделкой" });
+    return res.status(400).json({ error: "Недействительное значение ремонта. Должно быть: ПСО, С отделкой" });
   }
 
-  // Validate series
   if (type_id === "Квартира" && series && ![
-    "105 серия",
-    "106 серия",
-    "Индивидуалка",
-    "Элитка",
-    "103 серия",
-    "106 серия улучшенная",
-    "107 серия",
-    "108 серия",
-    "Малосемейка",
-    "Общежитие и Гостиничного типа",
-    "Сталинка",
-    "Хрущевка",
+    "105 серия", "106 серия", "Индивидуалка", "Элитка", "103 серия", "106 серия улучшенная",
+    "107 серия", "108 серия", "Малосемейка", "Общежитие и Гостиничного типа", "Сталинка", "Хрущевка"
   ].includes(series)) {
-    return res.status(400).json({ error: "Invalid series value. Must be one of: 105 серия, 106 серия, Индивидуалка, Элитка, 103 серия, 106 серия улучшенная, 107 серия, 108 серия, Малосемейка, Общежитие и Гостиничного типа, Сталинка, Хрущевка" });
+    return res.status(400).json({ error: "Недействительная серия. Должна быть одной из: 105 серия, 106 серия, Индивидуалка, Элитка, 103 серия, 106 серия улучшенная, 107 серия, 108 серия, Малосемейка, Общежитие и Гостиничного типа, Сталинка, Хрущевка" });
   }
 
-  // Validate rooms
   if (type_id === "Квартира" && rooms && !["1", "2", "3", "4", "5+"].includes(rooms)) {
-    return res.status(400).json({ error: "Invalid rooms value. Must be one of: 1, 2, 3, 4, 5+" });
+    return res.status(400).json({ error: "Недействительное количество комнат. Должно быть: 1, 2, 3, 4, 5+" });
   }
 
-  // Validate curator_id
   let finalCuratorId;
   if (curator_id) {
     if (isNaN(parseInt(curator_id))) {
-      return res.status(400).json({ error: "curator_id must be a valid number" });
+      return res.status(400).json({ error: "curator_id должен быть числом" });
     }
     finalCuratorId = parseInt(curator_id);
   } else {
@@ -683,41 +1009,37 @@ app.post("/api/properties", authenticate, upload.fields([
   }
 
   if (req.user.role === "REALTOR" && finalCuratorId && finalCuratorId !== req.user.id) {
-    return res.status(403).json({ error: "Realtor can only assign themselves as curator" });
+    return res.status(403).json({ error: "Риелтор может назначить только себя куратором" });
   }
 
   let connection;
   try {
     connection = await pool.getConnection();
 
-    // Validate zhk_id
     if (zhk_id) {
       const [jkCheck] = await connection.execute("SELECT id FROM jk WHERE id = ?", [zhk_id]);
       if (jkCheck.length === 0) {
-        return res.status(400).json({ error: "Invalid JK ID" });
+        return res.status(400).json({ error: "Недействительный ID ЖК" });
       }
     }
 
-    // Validate district_id
     if (district_id) {
       const [districtCheck] = await connection.execute("SELECT id FROM districts WHERE id = ?", [district_id]);
       if (districtCheck.length === 0) {
-        return res.status(400).json({ error: "Invalid district ID" });
+        return res.status(400).json({ error: "Недействительный ID района" });
       }
     }
 
-    // Validate subdistrict_id
     if (subdistrict_id) {
       const [subdistrictCheck] = await connection.execute(
         "SELECT id FROM subdistricts WHERE id = ? AND district_id = ?",
         [subdistrict_id, district_id || null]
       );
       if (subdistrictCheck.length === 0) {
-        return res.status(400).json({ error: "Invalid subdistrict ID or subdistrict does not belong to the selected district" });
+        return res.status(400).json({ error: "Недействительный ID микрорайона или микрорайон не принадлежит указанному району" });
       }
     }
 
-    // Validate curator_id
     let curatorName = null;
     if (finalCuratorId) {
       const [curatorCheck] = await connection.execute(
@@ -725,12 +1047,11 @@ app.post("/api/properties", authenticate, upload.fields([
         [finalCuratorId]
       );
       if (curatorCheck.length === 0) {
-        return res.status(400).json({ error: "Invalid curator ID" });
+        return res.status(400).json({ error: "Недействительный ID куратора" });
       }
       curatorName = curatorCheck[0].curator_name;
     }
 
-    // Upload files to S3
     for (const photo of photos) {
       try {
         await s3Client.send(new PutObjectCommand({
@@ -741,7 +1062,7 @@ app.post("/api/properties", authenticate, upload.fields([
         }));
       } catch (error) {
         console.error(`Failed to upload photo to S3: ${photo.filename}`, error.message);
-        throw new Error(`Failed to upload photo: ${photo.filename}`);
+        throw new Error(`Не удалось загрузить фото: ${photo.filename}`);
       }
     }
 
@@ -755,7 +1076,7 @@ app.post("/api/properties", authenticate, upload.fields([
         }));
       } catch (error) {
         console.error(`Failed to upload document to S3: ${document.filename}`, error.message);
-        throw new Error(`Failed to upload document: ${document.filename}`);
+        throw new Error(`Не удалось загрузить документ: ${document.filename}`);
       }
     }
 
@@ -827,7 +1148,7 @@ app.post("/api/properties", authenticate, upload.fields([
     res.json(newProperty);
   } catch (error) {
     console.error("Error creating property:", error.message);
-    res.status(500).json({ error: `Internal server error: ${error.message}` });
+    res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
   } finally {
     if (connection) connection.release();
   }
@@ -839,7 +1160,7 @@ app.put("/api/properties/:id", authenticate, upload.fields([
   { name: "document", maxCount: 1 },
 ]), async (req, res) => {
   if (!["SUPER_ADMIN", "REALTOR"].includes(req.user.role)) {
-    return res.status(403).json({ error: "Access denied: SUPER_ADMIN or REALTOR role required" });
+    return res.status(403).json({ error: "Доступ запрещён: требуется роль SUPER_ADMIN или REALTOR" });
   }
 
   const { id } = req.params;
@@ -880,48 +1201,33 @@ app.put("/api/properties/:id", authenticate, upload.fields([
     mimetype: req.files["document"][0].mimetype,
   } : null;
 
-  // Validate required fields
   if (!type_id || !price || !rukprice || !mkv || !address || !etaj || !etajnost) {
-    return res.status(400).json({ error: "All required fields (type_id, price, rukprice, mkv, address, etaj, etajnost) must be provided" });
+    return res.status(400).json({ error: "Все обязательные поля (type_id, price, rukprice, mkv, address, etaj, etajnost) должны быть заполнены" });
   }
 
   if (isNaN(parseFloat(price)) || isNaN(parseFloat(rukprice)) || isNaN(parseFloat(mkv)) || isNaN(parseInt(etaj)) || isNaN(parseInt(etajnost))) {
-    return res.status(400).json({ error: "Fields price, rukprice, mkv, etaj, etajnost must be numeric" });
+    return res.status(400).json({ error: "Поля price, rukprice, mkv, etaj, etajnost должны быть числами" });
   }
 
-  // Validate repair
   if (type_id === "Квартира" && repair && !["ПСО", "С отделкой"].includes(repair)) {
-    return res.status(400).json({ error: "Invalid repair value. Must be one of: ПСО, С отделкой" });
+    return res.status(400).json({ error: "Недействительное значение ремонта. Должно быть: ПСО, С отделкой" });
   }
 
-  // Validate series
   if (type_id === "Квартира" && series && ![
-    "105 серия",
-    "106 серия",
-    "Индивидуалка",
-    "Элитка",
-    "103 серия",
-    "106 серия улучшенная",
-    "107 серия",
-    "108 серия",
-    "Малосемейка",
-    "Общежитие и Гостиничного типа",
-    "Сталинка",
-    "Хрущевка",
+    "105 серия", "106 серия", "Индивидуалка", "Элитка", "103 серия", "106 серия улучшенная",
+    "107 серия", "108 серия", "Малосемейка", "Общежитие и Гостиничного типа", "Сталинка", "Хрущевка"
   ].includes(series)) {
-    return res.status(400).json({ error: "Invalid series value. Must be one of: 105 серия, 106 серия, Индивидуалка, Элитка, 103 серия, 106 серия улучшенная, 107 серия, 108 серия, Малосемейка, Общежитие и Гостиничного типа, Сталинка, Хрущевка" });
+    return res.status(400).json({ error: "Недействительная серия. Должна быть одной из: 105 серия, 106 серия, Индивидуалка, Элитка, 103 серия, 106 серия улучшенная, 107 серия, 108 серия, Малосемейка, Общежитие и Гостиничного типа, Сталинка, Хрущевка" });
   }
 
-  // Validate rooms
   if (type_id === "Квартира" && rooms && !["1", "2", "3", "4", "5+"].includes(rooms)) {
-    return res.status(400).json({ error: "Invalid rooms value. Must be one of: 1, 2, 3, 4, 5+" });
+    return res.status(400).json({ error: "Недействительное количество комнат. Должно быть: 1, 2, 3, 4, 5+" });
   }
 
-  // Validate curator_id
   let finalCuratorId;
   if (curator_id) {
     if (isNaN(parseInt(curator_id))) {
-      return res.status(400).json({ error: "curator_id must be a valid number" });
+      return res.status(400).json({ error: "curator_id должен быть числом" });
     }
     finalCuratorId = parseInt(curator_id);
   } else {
@@ -929,7 +1235,7 @@ app.put("/api/properties/:id", authenticate, upload.fields([
   }
 
   if (req.user.role === "REALTOR" && finalCuratorId && finalCuratorId !== req.user.id) {
-    return res.status(403).json({ error: "Realtor can only assign themselves as curator" });
+    return res.status(403).json({ error: "Риелтор может назначить только себя куратором" });
   }
 
   let connection;
@@ -940,42 +1246,38 @@ app.put("/api/properties/:id", authenticate, upload.fields([
       [id]
     );
     if (existingProperties.length === 0) {
-      return res.status(404).json({ error: "Property not found" });
+      return res.status(404).json({ error: "Объект недвижимости не найден" });
     }
 
     const existingProperty = existingProperties[0];
     if (req.user.role === "REALTOR" && existingProperty.curator_id && existingProperty.curator_id !== req.user.id) {
-      return res.status(403).json({ error: "You do not have permission to edit this property" });
+      return res.status(403).json({ error: "У вас нет прав для редактирования этого объекта" });
     }
 
-    // Validate zhk_id
     if (zhk_id) {
       const [jkCheck] = await connection.execute("SELECT id FROM jk WHERE id = ?", [zhk_id]);
       if (jkCheck.length === 0) {
-        return res.status(400).json({ error: "Invalid JK ID" });
+        return res.status(400).json({ error: "Недействительный ID ЖК" });
       }
     }
 
-    // Validate district_id
     if (district_id) {
       const [districtCheck] = await connection.execute("SELECT id FROM districts WHERE id = ?", [district_id]);
       if (districtCheck.length === 0) {
-        return res.status(400).json({ error: "Invalid district ID" });
+        return res.status(400).json({ error: "Недействительный ID района" });
       }
     }
 
-    // Validate subdistrict_id
     if (subdistrict_id) {
       const [subdistrictCheck] = await connection.execute(
         "SELECT id FROM subdistricts WHERE id = ? AND district_id = ?",
         [subdistrict_id, district_id || null]
       );
       if (subdistrictCheck.length === 0) {
-        return res.status(400).json({ error: "Invalid subdistrict ID or subdistrict does not belong to the selected district" });
+        return res.status(400).json({ error: "Недействительный ID микрорайона или микрорайон не принадлежит указанному району" });
       }
     }
 
-    // Validate curator_id
     let curatorName = null;
     if (finalCuratorId) {
       const [curatorCheck] = await connection.execute(
@@ -983,18 +1285,17 @@ app.put("/api/properties/:id", authenticate, upload.fields([
         [finalCuratorId]
       );
       if (curatorCheck.length === 0) {
-        return res.status(400).json({ error: "Invalid curator ID" });
+        return res.status(400).json({ error: "Недействительный ID куратора" });
       }
       curatorName = curatorCheck[0].curator_name;
     }
 
-    // Handle photos
     let photoFiles = [];
     if (existingProperty.photos) {
       try {
         photoFiles = JSON.parse(existingProperty.photos) || [];
       } catch (error) {
-        console.warn(`Error parsing photos for ID: ${id}, falling back to empty array:`, error.message);
+        console.warn(`Error parsing photos for ID: ${id}:`, error.message);
         photoFiles = [];
       }
     }
@@ -1004,18 +1305,16 @@ app.put("/api/properties/:id", authenticate, upload.fields([
       try {
         existingPhotosList = JSON.parse(existingPhotos) || [];
         if (!Array.isArray(existingPhotosList) || !existingPhotosList.every(p => typeof p === "string" && p.trim() && photoFiles.includes(p))) {
-          return res.status(400).json({ error: "Invalid existingPhotos: must be an array of valid photo filenames" });
+          return res.status(400).json({ error: "Недействительный формат existingPhotos: должен быть массивом имен файлов фотографий" });
         }
       } catch (error) {
         console.error(`Error parsing existingPhotos for ID: ${id}:`, error.message);
-        return res.status(400).json({ error: "Invalid existingPhotos format" });
+        return res.status(400).json({ error: "Недействительный формат existingPhotos" });
       }
     } else {
-      // Keep all existing photos if none specified
       existingPhotosList = photoFiles;
     }
 
-    // Upload new photos
     for (const photo of photos) {
       try {
         await s3Client.send(new PutObjectCommand({
@@ -1026,11 +1325,10 @@ app.put("/api/properties/:id", authenticate, upload.fields([
         }));
       } catch (error) {
         console.error(`Failed to upload photo to S3: ${photo.filename}`, error.message);
-        throw new Error(`Failed to upload photo: ${photo.filename}`);
+        throw new Error(`Не удалось загрузить фото: ${photo.filename}`);
       }
     }
 
-    // Delete old photos not in existingPhotosList
     const photosToDelete = photoFiles.filter(p => !existingPhotosList.includes(p));
     for (const oldPhoto of photosToDelete) {
       try {
@@ -1040,11 +1338,9 @@ app.put("/api/properties/:id", authenticate, upload.fields([
       }
     }
 
-    // Combine photos
     const newPhotos = [...existingPhotosList, ...photos.map(img => img.filename)];
     const photosJson = newPhotos.length > 0 ? JSON.stringify(newPhotos) : null;
 
-    // Handle document
     let newDocument = existingProperty.document;
     if (document) {
       try {
@@ -1064,11 +1360,10 @@ app.put("/api/properties/:id", authenticate, upload.fields([
         newDocument = document.filename;
       } catch (error) {
         console.error(`Failed to upload document to S3: ${document.filename}`, error.message);
-        throw new Error(`Failed to upload document: ${document.filename}`);
+        throw new Error(`Не удалось загрузить документ: ${document.filename}`);
       }
     }
 
-    // Update the property
     await connection.execute(
       `UPDATE properties SET
         type_id = ?, repair = ?, series = ?, zhk_id = ?, document_id = ?, owner_name = ?, curator_id = ?, price = ?, unit = ?, rukprice = ?, mkv = ?, rooms = ?, phone = ?,
@@ -1137,7 +1432,7 @@ app.put("/api/properties/:id", authenticate, upload.fields([
     res.json(updatedProperty);
   } catch (error) {
     console.error("Error updating property:", error.message);
-    res.status(500).json({ error: `Internal server error: ${error.message}` });
+    res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
   } finally {
     if (connection) connection.release();
   }
@@ -1146,7 +1441,7 @@ app.put("/api/properties/:id", authenticate, upload.fields([
 // Delete Property (Protected, SUPER_ADMIN or REALTOR)
 app.delete("/api/properties/:id", authenticate, async (req, res) => {
   if (!["SUPER_ADMIN", "REALTOR"].includes(req.user.role)) {
-    return res.status(403).json({ error: "Access denied: SUPER_ADMIN or REALTOR role required" });
+    return res.status(403).json({ error: "Доступ запрещён: требуется роль SUPER_ADMIN или REALTOR" });
   }
 
   const { id } = req.params;
@@ -1159,12 +1454,12 @@ app.delete("/api/properties/:id", authenticate, async (req, res) => {
       [id]
     );
     if (properties.length === 0) {
-      return res.status(404).json({ error: "Property not found" });
+      return res.status(404).json({ error: "Объект недвижимости не найден" });
     }
 
     const existingProperty = properties[0];
     if (req.user.role === "REALTOR" && existingProperty.curator_id && existingProperty.curator_id !== req.user.id) {
-      return res.status(403).json({ error: "You do not have permission to delete this property" });
+      return res.status(403).json({ error: "У вас нет прав для удаления этого объекта" });
     }
 
     let photoFiles = [];
@@ -1193,10 +1488,10 @@ app.delete("/api/properties/:id", authenticate, async (req, res) => {
     }
 
     await connection.execute("DELETE FROM properties WHERE id = ?", [id]);
-    res.json({ message: "Property successfully deleted" });
+    res.json({ message: "Объект недвижимости успешно удалён" });
   } catch (error) {
     console.error("Error deleting property:", error.message);
-    res.status(500).json({ error: `Internal server error: ${error.message}` });
+    res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
   } finally {
     if (connection) connection.release();
   }
@@ -1239,7 +1534,7 @@ app.get("/api/properties", authenticate, async (req, res) => {
     res.json(properties);
   } catch (error) {
     console.error("Error retrieving properties:", error.message);
-    res.status(500).json({ error: `Internal server error: ${error.message}` });
+    res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
   } finally {
     if (connection) connection.release();
   }
@@ -1267,29 +1562,7 @@ app.get("/api/listings", authenticate, async (req, res) => {
     res.json(listings);
   } catch (error) {
     console.error("Error retrieving listings:", error.message);
-    res.status(500).json({ error: `Internal server error: ${error.message}` });
-  } finally {
-    if (connection) connection.release();
-  }
-});
-
-// Get All Districts and Subdistricts
-app.get("/api/raions", authenticate, async (req, res) => {
-  let connection;
-  try {
-    connection = await pool.getConnection();
-    const [districts] = await connection.execute("SELECT id, name, NULL AS parentRaionId FROM districts");
-    const [subdistricts] = await connection.execute("SELECT id, name, district_id AS parentRaionId FROM subdistricts");
-
-    const raions = [
-      ...districts.map(row => ({ id: row.id, name: row.name, parentRaionId: null, isRaion: true })),
-      ...subdistricts.map(row => ({ id: row.id, name: row.name, parentRaionId: row.parentRaionId, isRaion: false })),
-    ];
-
-    res.json(raions);
-  } catch (error) {
-    console.error("Error retrieving districts and subdistricts:", error.message);
-    res.status(500).json({ error: `Internal server error: ${error.message}` });
+    res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
   } finally {
     if (connection) connection.release();
   }
@@ -1298,18 +1571,17 @@ app.get("/api/raions", authenticate, async (req, res) => {
 // Redirect Properties (Protected, SUPER_ADMIN only)
 app.patch("/api/properties/redirect", authenticate, async (req, res) => {
   if (req.user.role !== "SUPER_ADMIN") {
-    return res.status(403).json({ error: "Access denied: SUPER_ADMIN role required" });
+    return res.status(403).json({ error: "Доступ запрещён: требуется роль SUPER_ADMIN" });
   }
 
   const { propertyIds, curator_id } = req.body;
 
   if (!Array.isArray(propertyIds) || !curator_id) {
-    return res.status(400).json({ error: "propertyIds must be an array, curator_id is required" });
+    return res.status(400).json({ error: "propertyIds должен быть массивом, curator_id обязателен" });
   }
 
-  // Validate curator_id
   if (isNaN(parseInt(curator_id))) {
-    return res.status(400).json({ error: "curator_id must be a valid number" });
+    return res.status(400).json({ error: "curator_id должен быть числом" });
   }
   const finalCuratorId = parseInt(curator_id);
 
@@ -1321,7 +1593,7 @@ app.patch("/api/properties/redirect", authenticate, async (req, res) => {
       [finalCuratorId]
     );
     if (curatorCheck.length === 0) {
-      return res.status(400).json({ error: "Invalid curator ID" });
+      return res.status(400).json({ error: "Недействительный ID куратора" });
     }
 
     const [existingProperties] = await connection.execute(
@@ -1329,7 +1601,7 @@ app.patch("/api/properties/redirect", authenticate, async (req, res) => {
       [propertyIds]
     );
     if (existingProperties.length !== propertyIds.length) {
-      return res.status(404).json({ error: "Some properties not found" });
+      return res.status(404).json({ error: "Некоторые объекты недвижимости не найдены" });
     }
 
     const [result] = await connection.execute(
@@ -1337,10 +1609,10 @@ app.patch("/api/properties/redirect", authenticate, async (req, res) => {
       [finalCuratorId, propertyIds]
     );
 
-    res.json({ message: "Properties successfully redirected", affectedRows: result.affectedRows });
+    res.json({ message: "Объекты недвижимости успешно перенаправлены", affectedRows: result.affectedRows });
   } catch (error) {
     console.error("Error redirecting properties:", error.message);
-    res.status(500).json({ error: `Internal server error: ${error.message}` });
+    res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
   } finally {
     if (connection) connection.release();
   }
