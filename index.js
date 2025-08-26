@@ -2018,7 +2018,7 @@ app.get("/public/properties", async (req, res) => {
     }
     if (fsubrayon && fsubrayon !== "all") {
       query += ` AND subdistrict_id = ?`;
-      params.push(fsubrayon); // subdistrict_id — varchar
+      params.push(fsubrayon); // subdistrict_id — varchar55
     }
     if (fprice && !isNaN(parseFloat(fprice))) {
       query += ` AND price >= ?`;
