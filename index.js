@@ -22,9 +22,9 @@ const s3Client = new S3Client({
   endpoint: process.env.S3_ENDPOINT || "https://s3.twcstorage.ru",
   credentials: {
     accessKeyId: process.env.S3_ACCESS_KEY || "GIMZKRMOGP4F0MOTLVCE",
-    secretAccessKey: process.env.S3_SECRET_KEY || "WvhFfIzzCkITUrXfD8JfoDne7LmBhnNzDuDBj89I",
+    secretAccessKey: process.env.S3_SECRET_KEY || "WvhFfIzzCkITUrXfD8JfoDne7LmBhnNzDuDBj89I"
   },
-  forcePathStyle: true,
+  forcePathStyle: true
 });
 
 const bucketName = process.env.S3_BUCKET || "a2c31109-3cf2c97b-aca1-42b0-a822-3e0ade279447";
@@ -49,23 +49,11 @@ const storage = multer.memoryStorage();
 const upload = multer({
   storage,
   fileFilter: (req, file, cb) => {
-    // List of common image MIME types
     const allowedImageTypes = [
-      'image/jpeg',          // .jpg, .jpeg
-      'image/png',           // .png
-      'image/gif',           // .gif
-      'image/bmp',           // .bmp
-      'image/tiff',          // .tiff, .tif
-      'image/webp',          // .webp
-      'image/heic',          // .heic (iPhone HEIF format)
-      'image/heif',          // .heif
-      'image/svg+xml',       // .svg
-      'image/x-icon',        // .ico
-      'image/vnd.microsoft.icon', // .ico (alternate MIME type)
-      'image/jp2',           // .jp2 (JPEG 2000)
-      'image/avif'           // .avif
+      'image/jpeg', 'image/png', 'image/gif', 'image/bmp', 'image/tiff', 'image/webp',
+      'image/heic', 'image/heif', 'image/svg+xml', 'image/x-icon', 'image/vnd.microsoft.icon',
+      'image/jp2', 'image/avif'
     ];
-
     if (allowedImageTypes.includes(file.mimetype)) {
       console.log(`File ${file.originalname} accepted for upload`);
       cb(null, true);
@@ -74,7 +62,7 @@ const upload = multer({
       cb(new Error('Недопустимый формат файла. Разрешены только изображения (JPEG, PNG, GIF, BMP, TIFF, WebP, HEIC, HEIF, SVG, ICO, JP2, AVIF).'), false);
     }
   },
-  limits: { fileSize: 100 * 1024 * 1024 }, // Лимит 100 МБ
+  limits: { fileSize: 100 * 1024 * 1024 } // Лимит 100 МБ
 });
 
 // MySQL Connection Pool
@@ -84,7 +72,7 @@ const dbConfig = {
   password: process.env.DB_PASSWORD || "Vasya11091109",
   database: process.env.DB_NAME || "cs51703_kgadmin",
   port: process.env.DB_PORT || 3306,
-  connectionLimit: 10,
+  connectionLimit: 10
 };
 const pool = mysql.createPool(dbConfig);
 
@@ -186,7 +174,6 @@ async function testDatabaseConnection() {
         ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
       `);
     } else {
-      // Check and add owner_phone column if not exists
       const [ownerPhoneColumns] = await connection.execute(
         "SHOW COLUMNS FROM properties LIKE 'owner_phone'"
       );
@@ -232,7 +219,7 @@ async function testDatabaseConnection() {
     // Create districts table
     const [districtTables] = await connection.execute("SHOW TABLES LIKE 'districts'");
     if (districtTables.length === 0) {
-      console.log("Creating districts table...");
+      console.log("Creating Districts table...");
       await connection.execute(`
         CREATE TABLE districts (
           id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
@@ -337,7 +324,7 @@ app.post("/api/admin/login", async (req, res) => {
       role: user.role,
       photoUrl: user.photoUrl ? `https://s3.twcstorage.ru/${bucketName}/${user.photoUrl}` : null,
       name: `${user.first_name} ${user.last_name}`.trim(),
-      token,
+      token
     };
 
     res.json({ message: "Авторизация успешна", user: userResponse, token });
@@ -387,7 +374,7 @@ app.get("/api/users", authenticate, async (req, res) => {
       rows.map((user) => ({
         ...user,
         name: `${user.first_name} ${user.last_name}`.trim(),
-        photoUrl: user.photoUrl ? `https://s3.twcstorage.ru/${bucketName}/${user.photoUrl}` : null,
+        photoUrl: user.photoUrl ? `https://s3.twcstorage.ru/${bucketName}/${user.photoUrl}` : null
       }))
     );
   } catch (error) {
@@ -435,7 +422,7 @@ app.post("/api/users", authenticate, upload.single("photo"), async (req, res) =>
         Bucket: bucketName,
         Key: profile_picture,
         Body: photo.buffer,
-        ContentType: photo.mimetype,
+        ContentType: photo.mimetype
       }));
     }
 
@@ -458,7 +445,7 @@ app.post("/api/users", authenticate, upload.single("photo"), async (req, res) =>
       role,
       photoUrl: profile_picture ? `https://s3.twcstorage.ru/${bucketName}/${profile_picture}` : null,
       name: `${first_name} ${last_name}`.trim(),
-      token,
+      token
     };
 
     res.json(newUser);
@@ -515,7 +502,7 @@ app.put("/api/users/:id", authenticate, upload.single("photo"), async (req, res)
         Bucket: bucketName,
         Key: profile_picture,
         Body: photo.buffer,
-        ContentType: photo.mimetype,
+        ContentType: photo.mimetype
       }));
 
       if (existingUsers[0].profile_picture) {
@@ -540,7 +527,7 @@ app.put("/api/users/:id", authenticate, upload.single("photo"), async (req, res)
       phone,
       role,
       photoUrl: profile_picture ? `https://s3.twcstorage.ru/${bucketName}/${profile_picture}` : null,
-      name: `${first_name} ${last_name}`.trim(),
+      name: `${first_name} ${last_name}`.trim()
     };
 
     res.json(updatedUser);
@@ -592,8 +579,8 @@ app.delete("/api/users/:id", authenticate, async (req, res) => {
   }
 });
 
-// Get All JK (Protected)
-app.get("/api/jk", authenticate, async (req, res) => {
+// Get All JK (Public)
+app.get("/api/jk", async (req, res) => {
   let connection;
   try {
     connection = await pool.getConnection();
@@ -722,8 +709,8 @@ app.delete("/api/jk/:id", authenticate, async (req, res) => {
   }
 });
 
-// Get All Districts (Protected)
-app.get("/api/districts", authenticate, async (req, res) => {
+// Get All Districts (Public)
+app.get("/api/districts", async (req, res) => {
   let connection;
   try {
     connection = await pool.getConnection();
@@ -740,8 +727,8 @@ app.get("/api/districts", authenticate, async (req, res) => {
   }
 });
 
-// Get Subdistricts by District ID (Protected)
-app.get("/api/subdistricts", authenticate, async (req, res) => {
+// Get Subdistricts by District ID (Public)
+app.get("/api/subdistricts", async (req, res) => {
   const { district_id } = req.query;
   if (!district_id) {
     return res.status(400).json({ error: "district_id обязателен" });
@@ -766,8 +753,8 @@ app.get("/api/subdistricts", authenticate, async (req, res) => {
   }
 });
 
-// Get All Districts and Subdistricts
-app.get("/api/raions", authenticate, async (req, res) => {
+// Get All Districts and Subdistricts (Public)
+app.get("/api/raions", async (req, res) => {
   let connection;
   try {
     connection = await pool.getConnection();
@@ -776,7 +763,7 @@ app.get("/api/raions", authenticate, async (req, res) => {
 
     const raions = [
       ...districts.map(row => ({ id: row.id, name: row.name, parentRaionId: null, isRaion: true })),
-      ...subdistricts.map(row => ({ id: row.id, name: row.name, parentRaionId: row.parentRaionId, isRaion: false })),
+      ...subdistricts.map(row => ({ id: row.id, name: row.name, parentRaionId: row.parentRaionId, isRaion: false }))
     ];
 
     res.json(raions);
@@ -1027,10 +1014,29 @@ app.delete("/api/subraions/:id", authenticate, async (req, res) => {
   }
 });
 
+// Get Property Types (Public)
+app.get("/api/properties/types", async (req, res) => {
+  try {
+    const propertyTypes = [
+      "Квартира",
+      "Дом",
+      "Коммерческая недвижимость",
+      "Земельный участок"
+    ];
+    res.json(propertyTypes);
+  } catch (error) {
+    console.error("Error retrieving property types:", {
+      message: error.message,
+      stack: error.stack
+    });
+    res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
+  }
+});
+
 // Create New Property (Protected, SUPER_ADMIN or REALTOR)
 app.post("/api/properties", authenticate, upload.fields([
   { name: "photos", maxCount: 10 },
-  { name: "document", maxCount: 1 },
+  { name: "document", maxCount: 1 }
 ]), async (req, res) => {
   if (!["SUPER_ADMIN", "REALTOR"].includes(req.user.role)) {
     return res.status(403).json({ error: "Доступ запрещён: требуется роль SUPER_ADMIN или REALTOR" });
@@ -1058,19 +1064,19 @@ app.post("/api/properties", authenticate, upload.fields([
     status,
     owner_id,
     etaj,
-    etajnost,
+    etajnost
   } = req.body;
 
   const photos = req.files["photos"] ? req.files["photos"].map(file => ({
     filename: `${Date.now()}-${Math.round(Math.random() * 1e9)}${path.extname(file.originalname)}`,
     buffer: file.buffer,
-    mimetype: file.mimetype,
+    mimetype: file.mimetype
   })) : [];
 
   const document = req.files["document"] ? {
     filename: `${Date.now()}-${Math.round(Math.random() * 1e9)}${path.extname(req.files["document"][0].originalname)}`,
     buffer: req.files["document"][0].buffer,
-    mimetype: req.files["document"][0].mimetype,
+    mimetype: req.files["document"][0].mimetype
   } : null;
 
   if (!type_id || !price || !rukprice || !mkv || !address || !etaj || !etajnost) {
@@ -1156,7 +1162,7 @@ app.post("/api/properties", authenticate, upload.fields([
           Bucket: bucketName,
           Key: photo.filename,
           Body: photo.buffer,
-          ContentType: photo.mimetype,
+          ContentType: photo.mimetype
         }));
       } catch (error) {
         console.error(`Failed to upload photo to S3: ${photo.filename}`, error.message);
@@ -1170,7 +1176,7 @@ app.post("/api/properties", authenticate, upload.fields([
           Bucket: bucketName,
           Key: document.filename,
           Body: document.buffer,
-          ContentType: document.mimetype,
+          ContentType: document.mimetype
         }));
       } catch (error) {
         console.error(`Failed to upload document to S3: ${document.filename}`, error.message);
@@ -1209,7 +1215,7 @@ app.post("/api/properties", authenticate, upload.fields([
         status || null,
         owner_id || null,
         etaj,
-        etajnost,
+        etajnost
       ]
     );
 
@@ -1242,7 +1248,7 @@ app.post("/api/properties", authenticate, upload.fields([
       photos: photos.map(img => `https://s3.twcstorage.ru/${bucketName}/${img.filename}`),
       document: document ? `https://s3.twcstorage.ru/${bucketName}/${document.filename}` : null,
       date: new Date().toLocaleDateString("ru-RU"),
-      time: new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" }),
+      time: new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })
     };
 
     res.json(newProperty);
@@ -1260,7 +1266,7 @@ app.post("/api/properties", authenticate, upload.fields([
 // Update Property (Protected, SUPER_ADMIN or REALTOR)
 app.put("/api/properties/:id", authenticate, upload.fields([
   { name: "photos", maxCount: 10 },
-  { name: "document", maxCount: 1 },
+  { name: "document", maxCount: 1 }
 ]), async (req, res) => {
   if (!["SUPER_ADMIN", "REALTOR"].includes(req.user.role)) {
     return res.status(403).json({ error: "Доступ запрещён: требуется роль SUPER_ADMIN или REALTOR" });
@@ -1290,19 +1296,19 @@ app.put("/api/properties/:id", authenticate, upload.fields([
     owner_id,
     etaj,
     etajnost,
-    existingPhotos,
+    existingPhotos
   } = req.body;
 
   const photos = req.files["photos"] ? req.files["photos"].map(file => ({
     filename: `${Date.now()}-${Math.round(Math.random() * 1e9)}${path.extname(file.originalname)}`,
     buffer: file.buffer,
-    mimetype: file.mimetype,
+    mimetype: file.mimetype
   })) : [];
 
   const document = req.files["document"] ? {
     filename: `${Date.now()}-${Math.round(Math.random() * 1e9)}${path.extname(req.files["document"][0].originalname)}`,
     buffer: req.files["document"][0].buffer,
-    mimetype: req.files["document"][0].mimetype,
+    mimetype: req.files["document"][0].mimetype
   } : null;
 
   if (!type_id || !price || !rukprice || !mkv || !address || !etaj || !etajnost) {
@@ -1425,7 +1431,7 @@ app.put("/api/properties/:id", authenticate, upload.fields([
           Bucket: bucketName,
           Key: photo.filename,
           Body: photo.buffer,
-          ContentType: photo.mimetype,
+          ContentType: photo.mimetype
         }));
       } catch (error) {
         console.error(`Failed to upload photo to S3: ${photo.filename}`, error.message);
@@ -1452,7 +1458,7 @@ app.put("/api/properties/:id", authenticate, upload.fields([
           Bucket: bucketName,
           Key: document.filename,
           Body: document.buffer,
-          ContentType: document.mimetype,
+          ContentType: document.mimetype
         }));
         if (existingProperty.document) {
           try {
@@ -1499,7 +1505,7 @@ app.put("/api/properties/:id", authenticate, upload.fields([
         owner_id || null,
         etaj,
         etajnost,
-        id,
+        id
       ]
     );
 
@@ -1532,7 +1538,7 @@ app.put("/api/properties/:id", authenticate, upload.fields([
       photos: newPhotos.map(img => `https://s3.twcstorage.ru/${bucketName}/${img}`),
       document: newDocument ? `https://s3.twcstorage.ru/${bucketName}/${newDocument}` : null,
       date: new Date().toLocaleDateString("ru-RU"),
-      time: new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" }),
+      time: new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })
     };
 
     res.json(updatedProperty);
@@ -1609,16 +1615,29 @@ app.delete("/api/properties/:id", authenticate, async (req, res) => {
   }
 });
 
-// Get All Properties (Protected)
-app.get("/api/properties", authenticate, async (req, res) => {
+// Get All Properties (Public)
+app.get("/api/properties", async (req, res) => {
+  const { limit, offset } = req.query;
   let connection;
   try {
     connection = await pool.getConnection();
-    const [rows] = await connection.execute(
-      `SELECT p.*, CONCAT(u.first_name, ' ', u.last_name) AS curator_name
-       FROM properties p
-       LEFT JOIN users1 u ON p.curator_id = u.id`
-    );
+    let query = `
+      SELECT p.*, CONCAT(u.first_name, ' ', u.last_name) AS curator_name
+      FROM properties p
+      LEFT JOIN users1 u ON p.curator_id = u.id
+    `;
+    let params = [];
+
+    if (limit && !isNaN(parseInt(limit))) {
+      query += " LIMIT ?";
+      params.push(parseInt(limit));
+    }
+    if (offset && !isNaN(parseInt(offset))) {
+      query += " OFFSET ?";
+      params.push(parseInt(offset));
+    }
+
+    const [rows] = await connection.execute(query, params);
 
     const properties = rows.map(row => {
       let parsedPhotos = [];
@@ -1640,7 +1659,7 @@ app.get("/api/properties", authenticate, async (req, res) => {
         document: row.document ? `https://s3.twcstorage.ru/${bucketName}/${row.document}` : null,
         date: new Date(row.created_at).toLocaleDateString("ru-RU"),
         time: new Date(row.created_at).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" }),
-        curator_name: row.curator_name || null,
+        curator_name: row.curator_name || null
       };
     });
 
@@ -1672,11 +1691,11 @@ app.get("/api/listings", authenticate, async (req, res) => {
       area: row.mkv,
       district: row.address,
       price: row.price,
-      status: row.status,
+      status: row.status
     }));
 
     res.json(listings);
-  } catch (error) {
+  }catch (error) {
     console.error("Error retrieving listings:", {
       message: error.message,
       stack: error.stack
@@ -1688,47 +1707,97 @@ app.get("/api/listings", authenticate, async (req, res) => {
 });
 
 // Redirect Properties (Protected, SUPER_ADMIN only)
+// Redirect Properties (Protected, SUPER_ADMIN only)
 app.patch("/api/properties/redirect", authenticate, async (req, res) => {
   if (req.user.role !== "SUPER_ADMIN") {
     return res.status(403).json({ error: "Доступ запрещён: требуется роль SUPER_ADMIN" });
   }
 
-  const { propertyIds, curator_id } = req.body;
+  const { propertyIds, curatorId } = req.body;
 
-  if (!Array.isArray(propertyIds) || !curator_id) {
-    return res.status(400).json({ error: "propertyIds должен быть массивом, curator_id обязателен" });
+  // Validate input
+  if (!Array.isArray(propertyIds) || propertyIds.length === 0) {
+    return res.status(400).json({ error: "propertyIds должен быть непустым массивом" });
   }
-
-  if (isNaN(parseInt(curator_id))) {
-    return res.status(400).json({ error: "curator_id должен быть числом" });
+  if (!curatorId || isNaN(parseInt(curatorId))) {
+    return res.status(400).json({ error: "curatorId должен быть числом" });
   }
-  const finalCuratorId = parseInt(curator_id);
 
   let connection;
   try {
     connection = await pool.getConnection();
+
+    // Validate curatorId
     const [curatorCheck] = await connection.execute(
-      "SELECT id, CONCAT(first_name, ' ', last_name) AS curator_name FROM users1 WHERE id = ?",
-      [finalCuratorId]
+      "SELECT id, role, CONCAT(first_name, ' ', last_name) AS curator_name FROM users1 WHERE id = ?",
+      [curatorId]
     );
     if (curatorCheck.length === 0) {
       return res.status(400).json({ error: "Недействительный ID куратора" });
     }
-
-    const [existingProperties] = await connection.execute(
-      "SELECT id FROM properties WHERE id IN (?)",
-      [propertyIds]
-    );
-    if (existingProperties.length !== propertyIds.length) {
-      return res.status(404).json({ error: "Некоторые объекты недвижимости не найдены" });
+    if (!["REALTOR", "SUPER_ADMIN"].includes(curatorCheck[0].role)) {
+      return res.status(400).json({ error: "Куратор должен иметь роль REALTOR или SUPER_ADMIN" });
     }
 
-    const [result] = await connection.execute(
-      "UPDATE properties SET curator_id = ? WHERE id IN (?)",
-      [finalCuratorId, propertyIds]
+    // Validate propertyIds
+    const placeholders = propertyIds.map(() => "?").join(",");
+    const [existingProperties] = await connection.execute(
+      `SELECT id, curator_id, CONCAT(u.first_name, ' ', u.last_name) AS curator_name
+       FROM properties p
+       LEFT JOIN users1 u ON p.curator_id = u.id
+       WHERE p.id IN (${placeholders})`,
+      propertyIds
     );
 
-    res.json({ message: "Объекты недвижимости успешно перенаправлены", affectedRows: result.affectedRows });
+    if (existingProperties.length !== propertyIds.length) {
+      const foundIds = existingProperties.map(p => p.id);
+      const missingIds = propertyIds.filter(id => !foundIds.includes(parseInt(id)));
+      return res.status(400).json({ error: `Объекты недвижимости с ID ${missingIds.join(", ")} не найдены` });
+    }
+
+    // Update curator_id for all specified properties
+    await connection.execute(
+      `UPDATE properties SET curator_id = ? WHERE id IN (${placeholders})`,
+      [curatorId, ...propertyIds]
+    );
+
+    // Fetch updated properties to return
+    const [updatedProperties] = await connection.execute(
+      `SELECT p.*, CONCAT(u.first_name, ' ', u.last_name) AS curator_name
+       FROM properties p
+       LEFT JOIN users1 u ON p.curator_id = u.id
+       WHERE p.id IN (${placeholders})`,
+      propertyIds
+    );
+
+    const response = updatedProperties.map(row => {
+      let parsedPhotos = [];
+      if (row.photos) {
+        try {
+          parsedPhotos = JSON.parse(row.photos) || [];
+        } catch (error) {
+          console.warn(`Error parsing photos for ID: ${row.id}:`, error.message);
+          parsedPhotos = [];
+        }
+      }
+
+      return {
+        ...row,
+        repair: row.repair || null,
+        rooms: row.rooms || null,
+        owner_phone: row.owner_phone || null,
+        photos: parsedPhotos.map(img => `https://s3.twcstorage.ru/${bucketName}/${img}`),
+        document: row.document ? `https://s3.twcstorage.ru/${bucketName}/${row.document}` : null,
+        date: new Date(row.created_at).toLocaleDateString("ru-RU"),
+        time: new Date(row.created_at).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" }),
+        curator_name: row.curator_name || null
+      };
+    });
+
+    res.json({
+      message: "Объекты недвижимости успешно перенаправлены",
+      properties: response
+    });
   } catch (error) {
     console.error("Error redirecting properties:", {
       message: error.message,
@@ -1740,8 +1809,8 @@ app.patch("/api/properties/redirect", authenticate, async (req, res) => {
   }
 });
 
-// Start Server
+// Start the Server
 app.listen(port, () => {
-  console.log(`Server running on http://localhost:${port}`);
-  console.log(`Public access: ${publicDomain}:${port}`);
+  console.log(`Server is running on port ${port}`);
+  console.log(`API is accessible at ${publicDomain}`);
 });
