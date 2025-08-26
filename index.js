@@ -2023,7 +2023,6 @@ app.get("/public/properties/types", async (req, res) => {
   }
 });
 
-// Endpoint для списка недвижимости
 app.get("/public/properties", async (req, res) => {
   const {
     bid,
@@ -2044,6 +2043,12 @@ app.get("/public/properties", async (req, res) => {
   } = req.query;
 
   let connection;
+  // Объявляем query и params до try, чтобы избежать ReferenceError
+  let query = `SELECT id, type_id, repair, series, zhk_id, price, mkv, rooms, district_id, subdistrict_id, 
+                      address, description, status, etaj, etajnost, photos 
+               FROM properties WHERE 1=1`;
+  let params = [];
+
   try {
     connection = await pool.getConnection();
 
@@ -2054,31 +2059,52 @@ app.get("/public/properties", async (req, res) => {
       return res.status(200).json([]);
     }
 
-    let query = `SELECT id, type_id, repair, series, zhk_id, price, mkv, rooms, district_id, subdistrict_id, 
-                        address, description, status, etaj, etajnost, photos 
-                 FROM properties WHERE 1=1`;
-    const params = [];
-
-    if (bid) {
+    // Фильтр по bid
+    if (bid && !isNaN(parseInt(bid))) {
       query += ` AND id = ?`;
       params.push(parseInt(bid));
+    } else if (bid) {
+      console.warn("Invalid bid parameter:", bid);
+      return res.status(400).json({ error: "Недействительный параметр bid: должен быть числом" });
     }
-    if (titles) {
-      query += ` AND (address LIKE ? OR description LIKE ?)`;
-      params.push(`%${titles}%`, `%${titles}%`);
+
+    // Фильтр по titles с использованием = вместо LIKE
+    if (titles && typeof titles === "string" && titles.trim()) {
+      query += ` AND (address = ? OR description = ?)`;
+      params.push(titles.trim(), titles.trim());
+    } else if (titles) {
+      console.warn("Invalid titles parameter:", titles);
+      return res.status(400).json({ error: "Недействительный параметр titles: должен быть непустой строкой" });
     }
-    if (ftype && ftype !== "all") {
+
+    // Фильтр по ftype
+    if (ftype && ftype !== "all" && typeof ftype === "string") {
       query += ` AND type_id = ?`;
       params.push(ftype);
+    } else if (ftype && ftype !== "all") {
+      console.warn("Invalid ftype parameter:", ftype);
+      return res.status(400).json({ error: "Недействительный параметр ftype" });
     }
-    if (fjk && fjk !== "all") {
+
+    // Фильтр по fjk
+    if (fjk && fjk !== "all" && !isNaN(parseInt(fjk))) {
       query += ` AND zhk_id = ?`;
-      params.push(fjk);
+      params.push(parseInt(fjk));
+    } else if (fjk && fjk !== "all") {
+      console.warn("Invalid fjk parameter:", fjk);
+      return res.status(400).json({ error: "Недействительный параметр fjk: должен быть числом" });
     }
-    if (fseria && fseria !== "all") {
+
+    // Фильтр по fseria
+    if (fseria && fseria !== "all" && typeof fseria === "string") {
       query += ` AND series = ?`;
       params.push(fseria);
+    } else if (fseria && fseria !== "all") {
+      console.warn("Invalid fseria parameter:", fseria);
+      return res.status(400).json({ error: "Недействительный параметр fseria" });
     }
+
+    // Фильтр по fsost
     if (fsost && fsost !== "all") {
       if (fsost === "3") {
         query += ` AND repair IS NULL`;
@@ -2088,47 +2114,96 @@ app.get("/public/properties", async (req, res) => {
       } else if (fsost === "2") {
         query += ` AND repair = ?`;
         params.push("С отделкой");
+      } else {
+        console.warn("Invalid fsost parameter:", fsost);
+        return res.status(400).json({ error: "Недействительный параметр fsost: должен быть 1, 2 или 3" });
       }
     }
-    if (room && room !== "") {
+
+    // Фильтр по room
+    if (room && typeof room === "string" && room !== "") {
       query += ` AND rooms = ?`;
       params.push(room);
+    } else if (room && room !== "") {
+      console.warn("Invalid room parameter:", room);
+      return res.status(400).json({ error: "Недействительный параметр room" });
     }
-    if (frayon && frayon !== "all") {
+
+    // Фильтр по frayon
+    if (frayon && frayon !== "all" && !isNaN(parseInt(frayon))) {
       query += ` AND district_id = ?`;
-      params.push(frayon);
+      params.push(parseInt(frayon));
+    } else if (frayon && frayon !== "all") {
+      console.warn("Invalid frayon parameter:", frayon);
+      return res.status(400).json({ error: "Недействительный параметр frayon: должен быть числом" });
     }
-    if (fsubrayon && fsubrayon !== "all") {
+
+    // Фильтр по fsubrayon
+    if (fsubrayon && fsubrayon !== "all" && !isNaN(parseInt(fsubrayon))) {
       query += ` AND subdistrict_id = ?`;
-      params.push(fsubrayon);
+      params.push(parseInt(fsubrayon));
+    } else if (fsubrayon && fsubrayon !== "all") {
+      console.warn("Invalid fsubrayon parameter:", fsubrayon);
+      return res.status(400).json({ error: "Недействительный параметр fsubrayon: должен быть числом" });
     }
+
+    // Фильтр по fprice
     if (fprice && !isNaN(parseFloat(fprice))) {
       query += ` AND price >= ?`;
       params.push(parseFloat(fprice));
+    } else if (fprice) {
+      console.warn("Invalid fprice parameter:", fprice);
+      return res.status(400).json({ error: "Недействительный параметр fprice: должен быть числом" });
     }
+
+    // Фильтр по fpriceto
     if (fpriceto && !isNaN(parseFloat(fpriceto))) {
       query += ` AND price <= ?`;
       params.push(parseFloat(fpriceto));
+    } else if (fpriceto) {
+      console.warn("Invalid fpriceto parameter:", fpriceto);
+      return res.status(400).json({ error: "Недействительный параметр fpriceto: должен быть числом" });
     }
+
+    // Фильтр по mkv
     if (mkv && !isNaN(parseFloat(mkv))) {
       query += ` AND mkv >= ?`;
       params.push(parseFloat(mkv));
+    } else if (mkv) {
+      console.warn("Invalid mkv parameter:", mkv);
+      return res.status(400).json({ error: "Недействительный параметр mkv: должен быть числом" });
     }
+
+    // Фильтр по fetaj
     if (fetaj && fetaj !== "all") {
       if (fetaj === "4") {
         query += ` AND etaj >= ?`;
         params.push(4);
-      } else {
+      } else if (!isNaN(parseInt(fetaj))) {
         query += ` AND etaj = ?`;
         params.push(parseInt(fetaj));
+      } else {
+        console.warn("Invalid fetaj parameter:", fetaj);
+        return res.status(400).json({ error: "Недействительный параметр fetaj: должен быть числом или '4'" });
       }
     }
 
-    const offset = (parseInt(page) - 1) * parseInt(limit);
+    // Пагинация
+    const parsedPage = parseInt(page);
+    const parsedLimit = parseInt(limit);
+    if (isNaN(parsedPage) || parsedPage < 1) {
+      console.warn("Invalid page parameter:", page);
+      return res.status(400).json({ error: "Недействительный параметр page: должен быть числом >= 1" });
+    }
+    if (isNaN(parsedLimit) || parsedLimit < 1) {
+      console.warn("Invalid limit parameter:", limit);
+      return res.status(400).json({ error: "Недействительный параметр limit: должен быть числом >= 1" });
+    }
+    const offset = (parsedPage - 1) * parsedLimit;
     query += ` LIMIT ? OFFSET ?`;
-    params.push(parseInt(limit), parseInt(offset));
+    params.push(parsedLimit, offset);
 
-    // Логирование запроса и параметров для отладки
+    // Логирование запроса и параметров
     console.log("SQL запрос:", query);
     console.log("Параметры:", params);
 
