@@ -1812,14 +1812,15 @@ app.get("/public/properties/types", async (req, res) => {
 
 
 // Публичный эндпоинт для получения списка недвижимости с фильтрацией
+// Публичный эндпоинт для получения списка недвижимости с фильтрацией
 app.get("/public/properties", async (req, res) => {
   const {
     bid,
     titles,
     ftype,
     fjk,
-    fseria, // Будем интерпретировать как series
-    fsost,  // Будем интерпретировать как repair
+    fseria,
+    fsost,
     room,
     frayon,
     fsubrayon,
@@ -1844,7 +1845,7 @@ app.get("/public/properties", async (req, res) => {
       params.push(parseInt(bid));
     }
 
-    // Фильтр по ключевым словам (поиск по адресу и описанию)
+    // Фильтр по ключевым словам
     if (titles) {
       query += ` AND (address LIKE ? OR description LIKE ?)`;
       params.push(`%${titles}%`, `%${titles}%`);
@@ -1862,19 +1863,19 @@ app.get("/public/properties", async (req, res) => {
       params.push(fjk);
     }
 
-    // Фильтр по серии (fseria интерпретируем как series)
+    // Фильтр по серии
     if (fseria && fseria !== "all") {
       query += ` AND series = ?`;
       params.push(fseria);
     }
 
-    // Фильтр по состоянию (fsost интерпретируем как repair)
+    // Фильтр по состоянию (repair)
     if (fsost && fsost !== "all") {
       const repairMap = {
         "1": "ПСО",
         "2": "С отделкой",
-        "3": null, // Ремонт требуется (без ремонта)
-        "4": "Элитное", // Можно добавить, если в базе есть такое значение
+        "3": null,
+        "4": "Элитное",
       };
       if (fsost === "3") {
         query += ` AND repair IS NULL`;
