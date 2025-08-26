@@ -1067,6 +1067,50 @@ app.post("/api/properties", authenticate, upload.fields([
     etajnost
   } = req.body;
 
+  // Validate required fields
+  if (!type_id || !price || !rukprice || !mkv || !address || !etaj || !etajnost) {
+    return res.status(400).json({ error: "Все обязательные поля (type_id, price, rukprice, mkv, address, etaj, etajnost) должны быть заполнены" });
+  }
+
+  // Validate numeric fields
+  const parsedPrice = parseFloat(price);
+  const parsedRukprice = parseFloat(rukprice);
+  const parsedMkv = parseFloat(mkv);
+  const parsedEtaj = parseInt(etaj);
+  const parsedEtajnost = parseInt(etajnost);
+  if (isNaN(parsedPrice) || isNaN(parsedRukprice) || isNaN(parsedMkv) || isNaN(parsedEtaj) || isNaN(parsedEtajnost)) {
+    return res.status(400).json({ error: "Поля price, rukprice, mkv, etaj, etajnost должны быть числами" });
+  }
+
+  // Validate type-specific fields
+  if (type_id === "Квартира" && repair && !["ПСО", "С отделкой"].includes(repair)) {
+    return res.status(400).json({ error: "Недействительное значение ремонта. Должно быть: ПСО, С отделкой" });
+  }
+  if (type_id === "Квартира" && series && ![
+    "105 серия", "106 серия", "Индивидуалка", "Элитка", "103 серия", "106 серия улучшенная",
+    "107 серия", "108 серия", "Малосемейка", "Общежитие и Гостиничного типа", "Сталинка", "Хрущевка"
+  ].includes(series)) {
+    return res.status(400).json({ error: "Недействительная серия. Должна быть одной из: 105 серия, 106 серия, Индивидуалка, Элитка, 103 серия, 106 серия улучшенная, 107 серия, 108 серия, Малосемейка, Общежитие и Гостиничного типа, Сталинка, Хрущевка" });
+  }
+  if (type_id === "Квартира" && rooms && !["1", "2", "3", "4", "5+"].includes(rooms)) {
+    return res.status(400).json({ error: "Недействительное количество комнат. Должно быть: 1, 2, 3, 4, 5+" });
+  }
+
+  // Validate curator_id
+  let finalCuratorId;
+  if (curator_id) {
+    finalCuratorId = parseInt(curator_id);
+    if (isNaN(finalCuratorId) || finalCuratorId <= 0) {
+      return res.status(400).json({ error: "curator_id должен быть положительным целым числом" });
+    }
+  } else {
+    finalCuratorId = req.user.role === "REALTOR" ? req.user.id : null;
+  }
+
+  if (req.user.role === "REALTOR" && finalCuratorId && finalCuratorId !== req.user.id) {
+    return res.status(403).json({ error: "Риелтор может назначить только себя куратором" });
+  }
+
   const photos = req.files["photos"] ? req.files["photos"].map(file => ({
     filename: `${Date.now()}-${Math.round(Math.random() * 1e9)}${path.extname(file.originalname)}`,
     buffer: file.buffer,
@@ -1079,65 +1123,41 @@ app.post("/api/properties", authenticate, upload.fields([
     mimetype: req.files["document"][0].mimetype
   } : null;
 
-  if (!type_id || !price || !rukprice || !mkv || !address || !etaj || !etajnost) {
-    return res.status(400).json({ error: "Все обязательные поля (type_id, price, rukprice, mkv, address, etaj, etajnost) должны быть заполнены" });
-  }
-
-  if (isNaN(parseFloat(price)) || isNaN(parseFloat(rukprice)) || isNaN(parseFloat(mkv)) || isNaN(parseInt(etaj)) || isNaN(parseInt(etajnost))) {
-    return res.status(400).json({ error: "Поля price, rukprice, mkv, etaj, etajnost должны быть числами" });
-  }
-
-  if (type_id === "Квартира" && repair && !["ПСО", "С отделкой"].includes(repair)) {
-    return res.status(400).json({ error: "Недействительное значение ремонта. Должно быть: ПСО, С отделкой" });
-  }
-
-  if (type_id === "Квартира" && series && ![
-    "105 серия", "106 серия", "Индивидуалка", "Элитка", "103 серия", "106 серия улучшенная",
-    "107 серия", "108 серия", "Малосемейка", "Общежитие и Гостиничного типа", "Сталинка", "Хрущевка"
-  ].includes(series)) {
-    return res.status(400).json({ error: "Недействительная серия. Должна быть одной из: 105 серия, 106 серия, Индивидуалка, Элитка, 103 серия, 106 серия улучшенная, 107 серия, 108 серия, Малосемейка, Общежитие и Гостиничного типа, Сталинка, Хрущевка" });
-  }
-
-  if (type_id === "Квартира" && rooms && !["1", "2", "3", "4", "5+"].includes(rooms)) {
-    return res.status(400).json({ error: "Недействительное количество комнат. Должно быть: 1, 2, 3, 4, 5+" });
-  }
-
-  let finalCuratorId;
-  if (curator_id) {
-    if (isNaN(parseInt(curator_id))) {
-      return res.status(400).json({ error: "curator_id должен быть числом" });
-    }
-    finalCuratorId = parseInt(curator_id);
-  } else {
-    finalCuratorId = req.user.role === "REALTOR" ? req.user.id : null;
-  }
-
-  if (req.user.role === "REALTOR" && finalCuratorId && finalCuratorId !== req.user.id) {
-    return res.status(403).json({ error: "Риелтор может назначить только себя куратором" });
-  }
-
   let connection;
   try {
     connection = await pool.getConnection();
 
+    // Validate referenced IDs
     if (zhk_id) {
-      const [jkCheck] = await connection.execute("SELECT id FROM jk WHERE id = ?", [zhk_id]);
+      const parsedZhkId = parseInt(zhk_id);
+      if (isNaN(parsedZhkId)) {
+        return res.status(400).json({ error: "zhk_id должен быть числом" });
+      }
+      const [jkCheck] = await connection.execute("SELECT id FROM jk WHERE id = ?", [parsedZhkId]);
       if (jkCheck.length === 0) {
         return res.status(400).json({ error: "Недействительный ID ЖК" });
       }
     }
 
     if (district_id) {
-      const [districtCheck] = await connection.execute("SELECT id FROM districts WHERE id = ?", [district_id]);
+      const parsedDistrictId = parseInt(district_id);
+      if (isNaN(parsedDistrictId)) {
+        return res.status(400).json({ error: "district_id должен быть числом" });
+      }
+      const [districtCheck] = await connection.execute("SELECT id FROM districts WHERE id = ?", [parsedDistrictId]);
       if (districtCheck.length === 0) {
         return res.status(400).json({ error: "Недействительный ID района" });
       }
     }
 
     if (subdistrict_id) {
+      const parsedSubdistrictId = parseInt(subdistrict_id);
+      if (isNaN(parsedSubdistrictId)) {
+        return res.status(400).json({ error: "subdistrict_id должен быть числом" });
+      }
       const [subdistrictCheck] = await connection.execute(
         "SELECT id FROM subdistricts WHERE id = ? AND district_id = ?",
-        [subdistrict_id, district_id || null]
+        [parsedSubdistrictId, district_id || null]
       );
       if (subdistrictCheck.length === 0) {
         return res.status(400).json({ error: "Недействительный ID микрорайона или микрорайон не принадлежит указанному району" });
@@ -1156,6 +1176,7 @@ app.post("/api/properties", authenticate, upload.fields([
       curatorName = curatorCheck[0].curator_name;
     }
 
+    // Upload files to S3
     for (const photo of photos) {
       try {
         await s3Client.send(new PutObjectCommand({
@@ -1185,38 +1206,45 @@ app.post("/api/properties", authenticate, upload.fields([
     }
 
     const photosJson = photos.length > 0 ? JSON.stringify(photos.map(img => img.filename)) : null;
+    const params = [
+      type_id || null,
+      repair || null,
+      series || null,
+      zhk_id ? parseInt(zhk_id) : null,
+      0,
+      owner_name || null,
+      owner_phone || null,
+      finalCuratorId,
+      parsedPrice,
+      unit || null,
+      parsedRukprice,
+      parsedMkv,
+      rooms || null,
+      phone || null,
+      district_id ? parseInt(district_id) : null,
+      subdistrict_id ? parseInt(subdistrict_id) : null,
+      address,
+      notes || null,
+      description || null,
+      photosJson,
+      document ? document.filename : null,
+      status || null,
+      owner_id ? parseInt(owner_id) : null,
+      parsedEtaj,
+      parsedEtajnost
+    ];
+
+    console.log("Insert query:", `INSERT INTO properties (...) VALUES (${params.map(() => "?").join(",")})`, "Params:", params);
+    if (params.length !== 25) {
+      throw new Error(`Parameter count mismatch: expected 25, got ${params.length}`);
+    }
+
     const [result] = await connection.execute(
       `INSERT INTO properties (
         type_id, repair, series, zhk_id, document_id, owner_name, owner_phone, curator_id, price, unit, rukprice, mkv, rooms, phone, 
         district_id, subdistrict_id, address, notes, description, photos, document, status, owner_id, etaj, etajnost
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        type_id || null,
-        repair || null,
-        series || null,
-        zhk_id || null,
-        0,
-        owner_name || null,
-        owner_phone || null,
-        finalCuratorId,
-        price,
-        unit || null,
-        rukprice,
-        mkv,
-        rooms || null,
-        phone || null,
-        district_id || null,
-        subdistrict_id || null,
-        address,
-        notes || null,
-        description || null,
-        photosJson,
-        document ? document.filename : null,
-        status || null,
-        owner_id || null,
-        etaj,
-        etajnost
-      ]
+      params
     );
 
     const newProperty = {
@@ -1230,10 +1258,10 @@ app.post("/api/properties", authenticate, upload.fields([
       owner_phone,
       curator_id: finalCuratorId,
       curator_name: curatorName || null,
-      price,
+      price: parsedPrice,
       unit,
-      rukprice,
-      mkv,
+      rukprice: parsedRukprice,
+      mkv: parsedMkv,
       rooms,
       phone,
       district_id,
@@ -1243,8 +1271,8 @@ app.post("/api/properties", authenticate, upload.fields([
       description,
       status,
       owner_id,
-      etaj,
-      etajnost,
+      etaj: parsedEtaj,
+      etajnost: parsedEtajnost,
       photos: photos.map(img => `https://s3.twcstorage.ru/${bucketName}/${img.filename}`),
       document: document ? `https://s3.twcstorage.ru/${bucketName}/${document.filename}` : null,
       date: new Date().toLocaleDateString("ru-RU"),
@@ -1299,6 +1327,50 @@ app.put("/api/properties/:id", authenticate, upload.fields([
     existingPhotos
   } = req.body;
 
+  // Validate required fields
+  if (!type_id || !price || !rukprice || !mkv || !address || !etaj || !etajnost) {
+    return res.status(400).json({ error: "Все обязательные поля (type_id, price, rukprice, mkv, address, etaj, etajnost) должны быть заполнены" });
+  }
+
+  // Validate numeric fields
+  const parsedPrice = parseFloat(price);
+  const parsedRukprice = parseFloat(rukprice);
+  const parsedMkv = parseFloat(mkv);
+  const parsedEtaj = parseInt(etaj);
+  const parsedEtajnost = parseInt(etajnost);
+  if (isNaN(parsedPrice) || isNaN(parsedRukprice) || isNaN(parsedMkv) || isNaN(parsedEtaj) || isNaN(parsedEtajnost)) {
+    return res.status(400).json({ error: "Поля price, rukprice, mkv, etaj, etajnost должны быть числами" });
+  }
+
+  // Validate type-specific fields
+  if (type_id === "Квартира" && repair && !["ПСО", "С отделкой"].includes(repair)) {
+    return res.status(400).json({ error: "Недействительное значение ремонта. Должно быть: ПСО, С отделкой" });
+  }
+  if (type_id === "Квартира" && series && ![
+    "105 серия", "106 серия", "Индивидуалка", "Элитка", "103 серия", "106 серия улучшенная",
+    "107 серия", "108 серия", "Малосемейка", "Общежитие и Гостиничного типа", "Сталинка", "Хрущевка"
+  ].includes(series)) {
+    return res.status(400).json({ error: "Недействительная серия. Должна быть одной из: 105 серия, 106 серия, Индивидуалка, Элитка, 103 серия, 106 серия улучшенная, 107 серия, 108 серия, Малосемейка, Общежитие и Гостиничного типа, Сталинка, Хрущевка" });
+  }
+  if (type_id === "Квартира" && rooms && !["1", "2", "3", "4", "5+"].includes(rooms)) {
+    return res.status(400).json({ error: "Недействительное количество комнат. Должно быть: 1, 2, 3, 4, 5+" });
+  }
+
+  // Validate curator_id
+  let finalCuratorId;
+  if (curator_id) {
+    finalCuratorId = parseInt(curator_id);
+    if (isNaN(finalCuratorId) || finalCuratorId <= 0) {
+      return res.status(400).json({ error: "curator_id должен быть положительным целым числом" });
+    }
+  } else {
+    finalCuratorId = req.user.role === "REALTOR" ? req.user.id : null;
+  }
+
+  if (req.user.role === "REALTOR" && finalCuratorId && finalCuratorId !== req.user.id) {
+    return res.status(403).json({ error: "Риелтор может назначить только себя куратором" });
+  }
+
   const photos = req.files["photos"] ? req.files["photos"].map(file => ({
     filename: `${Date.now()}-${Math.round(Math.random() * 1e9)}${path.extname(file.originalname)}`,
     buffer: file.buffer,
@@ -1311,49 +1383,12 @@ app.put("/api/properties/:id", authenticate, upload.fields([
     mimetype: req.files["document"][0].mimetype
   } : null;
 
-  if (!type_id || !price || !rukprice || !mkv || !address || !etaj || !etajnost) {
-    return res.status(400).json({ error: "Все обязательные поля (type_id, price, rukprice, mkv, address, etaj, etajnost) должны быть заполнены" });
-  }
-
-  if (isNaN(parseFloat(price)) || isNaN(parseFloat(rukprice)) || isNaN(parseFloat(mkv)) || isNaN(parseInt(etaj)) || isNaN(parseInt(etajnost))) {
-    return res.status(400).json({ error: "Поля price, rukprice, mkv, etaj, etajnost должны быть числами" });
-  }
-
-  if (type_id === "Квартира" && repair && !["ПСО", "С отделкой"].includes(repair)) {
-    return res.status(400).json({ error: "Недействительное значение ремонта. Должно быть: ПСО, С отделкой" });
-  }
-
-  if (type_id === "Квартира" && series && ![
-    "105 серия", "106 серия", "Индивидуалка", "Элитка", "103 серия", "106 серия улучшенная",
-    "107 серия", "108 серия", "Малосемейка", "Общежитие и Гостиничного типа", "Сталинка", "Хрущевка"
-  ].includes(series)) {
-    return res.status(400).json({ error: "Недействительная серия. Должна быть одной из: 105 серия, 106 серия, Индивидуалка, Элитка, 103 серия, 106 серия улучшенная, 107 серия, 108 серия, Малосемейка, Общежитие и Гостиничного типа, Сталинка, Хрущевка" });
-  }
-
-  if (type_id === "Квартира" && rooms && !["1", "2", "3", "4", "5+"].includes(rooms)) {
-    return res.status(400).json({ error: "Недействительное количество комнат. Должно быть: 1, 2, 3, 4, 5+" });
-  }
-
-  let finalCuratorId;
-  if (curator_id) {
-    if (isNaN(parseInt(curator_id))) {
-      return res.status(400).json({ error: "curator_id должен быть числом" });
-    }
-    finalCuratorId = parseInt(curator_id);
-  } else {
-    finalCuratorId = req.user.role === "REALTOR" ? req.user.id : null;
-  }
-
-  if (req.user.role === "REALTOR" && finalCuratorId && finalCuratorId !== req.user.id) {
-    return res.status(403).json({ error: "Риелтор может назначить только себя куратором" });
-  }
-
   let connection;
   try {
     connection = await pool.getConnection();
     const [existingProperties] = await connection.execute(
       "SELECT photos, document, curator_id, owner_phone FROM properties WHERE id = ?",
-      [id]
+      [parseInt(id)]
     );
     if (existingProperties.length === 0) {
       return res.status(404).json({ error: "Объект недвижимости не найден" });
@@ -1364,24 +1399,37 @@ app.put("/api/properties/:id", authenticate, upload.fields([
       return res.status(403).json({ error: "У вас нет прав для редактирования этого объекта" });
     }
 
+    // Validate referenced IDs
     if (zhk_id) {
-      const [jkCheck] = await connection.execute("SELECT id FROM jk WHERE id = ?", [zhk_id]);
+      const parsedZhkId = parseInt(zhk_id);
+      if (isNaN(parsedZhkId)) {
+        return res.status(400).json({ error: "zhk_id должен быть числом" });
+      }
+      const [jkCheck] = await connection.execute("SELECT id FROM jk WHERE id = ?", [parsedZhkId]);
       if (jkCheck.length === 0) {
         return res.status(400).json({ error: "Недействительный ID ЖК" });
       }
     }
 
     if (district_id) {
-      const [districtCheck] = await connection.execute("SELECT id FROM districts WHERE id = ?", [district_id]);
+      const parsedDistrictId = parseInt(district_id);
+      if (isNaN(parsedDistrictId)) {
+        return res.status(400).json({ error: "district_id должен быть числом" });
+      }
+      const [districtCheck] = await connection.execute("SELECT id FROM districts WHERE id = ?", [parsedDistrictId]);
       if (districtCheck.length === 0) {
         return res.status(400).json({ error: "Недействительный ID района" });
       }
     }
 
     if (subdistrict_id) {
+      const parsedSubdistrictId = parseInt(subdistrict_id);
+      if (isNaN(parsedSubdistrictId)) {
+        return res.status(400).json({ error: "subdistrict_id должен быть числом" });
+      }
       const [subdistrictCheck] = await connection.execute(
         "SELECT id FROM subdistricts WHERE id = ? AND district_id = ?",
-        [subdistrict_id, district_id || null]
+        [parsedSubdistrictId, district_id || null]
       );
       if (subdistrictCheck.length === 0) {
         return res.status(400).json({ error: "Недействительный ID микрорайона или микрорайон не принадлежит указанному району" });
@@ -1474,39 +1522,46 @@ app.put("/api/properties/:id", authenticate, upload.fields([
       }
     }
 
+    const params = [
+      type_id || null,
+      repair || null,
+      series || null,
+      zhk_id ? parseInt(zhk_id) : null,
+      0,
+      owner_name || null,
+      owner_phone || null,
+      finalCuratorId,
+      parsedPrice,
+      unit || null,
+      parsedRukprice,
+      parsedMkv,
+      rooms || null,
+      phone || null,
+      district_id ? parseInt(district_id) : null,
+      subdistrict_id ? parseInt(subdistrict_id) : null,
+      address,
+      notes || null,
+      description || null,
+      photosJson,
+      newDocument,
+      status || null,
+      owner_id ? parseInt(owner_id) : null,
+      parsedEtaj,
+      parsedEtajnost,
+      parseInt(id)
+    ];
+
+    console.log("Update query:", `UPDATE properties SET ... WHERE id = ?`, "Params:", params);
+    if (params.length !== 26) {
+      throw new Error(`Parameter count mismatch: expected 26, got ${params.length}`);
+    }
+
     await connection.execute(
       `UPDATE properties SET
         type_id = ?, repair = ?, series = ?, zhk_id = ?, document_id = ?, owner_name = ?, owner_phone = ?, curator_id = ?, price = ?, unit = ?, rukprice = ?, mkv = ?, rooms = ?, phone = ?,
         district_id = ?, subdistrict_id = ?, address = ?, notes = ?, description = ?, photos = ?, document = ?, status = ?, owner_id = ?, etaj = ?, etajnost = ?
         WHERE id = ?`,
-      [
-        type_id || null,
-        repair || null,
-        series || null,
-        zhk_id || null,
-        0,
-        owner_name || null,
-        owner_phone || null,
-        finalCuratorId,
-        price,
-        unit || null,
-        rukprice,
-        mkv,
-        rooms || null,
-        phone || null,
-        district_id || null,
-        subdistrict_id || null,
-        address,
-        notes || null,
-        description || null,
-        photosJson,
-        newDocument,
-        status || null,
-        owner_id || null,
-        etaj,
-        etajnost,
-        id
-      ]
+      params
     );
 
     const updatedProperty = {
@@ -1520,10 +1575,10 @@ app.put("/api/properties/:id", authenticate, upload.fields([
       owner_phone,
       curator_id: finalCuratorId,
       curator_name: curatorName || null,
-      price,
+      price: parsedPrice,
       unit,
-      rukprice,
-      mkv,
+      rukprice: parsedRukprice,
+      mkv: parsedMkv,
       rooms,
       phone,
       district_id,
@@ -1533,8 +1588,8 @@ app.put("/api/properties/:id", authenticate, upload.fields([
       description,
       status,
       owner_id,
-      etaj,
-      etajnost,
+      etaj: parsedEtaj,
+      etajnost: parsedEtajnost,
       photos: newPhotos.map(img => `https://s3.twcstorage.ru/${bucketName}/${img}`),
       document: newDocument ? `https://s3.twcstorage.ru/${bucketName}/${newDocument}` : null,
       date: new Date().toLocaleDateString("ru-RU"),
@@ -1552,7 +1607,6 @@ app.put("/api/properties/:id", authenticate, upload.fields([
     if (connection) connection.release();
   }
 });
-
 // Delete Property (Protected, SUPER_ADMIN or REALTOR)
 app.delete("/api/properties/:id", authenticate, async (req, res) => {
   if (!["SUPER_ADMIN", "REALTOR"].includes(req.user.role)) {
