@@ -1947,9 +1947,7 @@ app.get("/public/properties/types", async (req, res) => {
 });
 
 
-// Публичный эндпоинт для получения списка недвижимости с фильтрацией
-// Публичный эндпоинт для получения списка недвижимости с фильтрацией
-// Public endpoint for properties
+// Endpoint для списка недвижимости
 app.get("/public/properties", async (req, res) => {
   const {
     bid,
@@ -1966,7 +1964,7 @@ app.get("/public/properties", async (req, res) => {
     mkv,
     fetaj,
     page = 1,
-    limit = 10,
+    limit = 30,
   } = req.query;
 
   let connection;
@@ -1977,7 +1975,7 @@ app.get("/public/properties", async (req, res) => {
                  FROM properties WHERE 1=1`;
     const params = [];
 
-    if (bid && !isNaN(parseInt(bid))) {
+    if (bid) {
       query += ` AND id = ?`;
       params.push(parseInt(bid));
     }
@@ -1991,7 +1989,7 @@ app.get("/public/properties", async (req, res) => {
     }
     if (fjk && fjk !== "all") {
       query += ` AND zhk_id = ?`;
-      params.push(fjk);
+      params.push(fjk); // zhk_id — varchar
     }
     if (fseria && fseria !== "all") {
       query += ` AND series = ?`;
@@ -2012,15 +2010,15 @@ app.get("/public/properties", async (req, res) => {
     }
     if (room && room !== "") {
       query += ` AND rooms = ?`;
-      params.push(room);
+      params.push(room); // rooms — varchar
     }
     if (frayon && frayon !== "all") {
       query += ` AND district_id = ?`;
-      params.push(frayon);
+      params.push(frayon); // district_id — varchar
     }
     if (fsubrayon && fsubrayon !== "all") {
       query += ` AND subdistrict_id = ?`;
-      params.push(fsubrayon);
+      params.push(fsubrayon); // subdistrict_id — varchar
     }
     if (fprice && !isNaN(parseFloat(fprice))) {
       query += ` AND price >= ?`;
@@ -2052,13 +2050,11 @@ app.get("/public/properties", async (req, res) => {
 
     const properties = rows.map(row => {
       let parsedPhotos = [];
-      if (row.photos) {
-        try {
-          parsedPhotos = JSON.parse(row.photos) || [];
-        } catch (error) {
-          console.warn(`Error parsing photos for ID ${row.id}:`, error.message);
-          parsedPhotos = [];
-        }
+      try {
+        parsedPhotos = row.photos ? JSON.parse(row.photos) : [];
+      } catch (error) {
+        console.warn(`Ошибка парсинга photos для ID ${row.id}:`, error.message);
+        parsedPhotos = [];
       }
 
       return {
@@ -2067,27 +2063,28 @@ app.get("/public/properties", async (req, res) => {
         repair: row.repair || null,
         series: row.series || null,
         zhk_id: row.zhk_id || null,
-        price: row.price,
-        mkv: row.mkv,
+        price: row.price || null,
+        mkv: row.mkv || null,
         rooms: row.rooms || null,
         district_id: row.district_id || null,
         subdistrict_id: row.subdistrict_id || null,
         address: row.address || null,
         description: row.description || null,
         status: row.status || null,
-        etaj: row.etaj,
-        etajnost: row.etajnost,
+        etaj: row.etaj || null,
+        etajnost: row.etajnost || null,
         photos: parsedPhotos.map(img => `https://s3.twcstorage.ru/${bucketName}/${img}`),
       };
     });
 
-    res.json(properties);
+    res.status(200).json(properties);
   } catch (error) {
-    console.error("Error fetching properties:", {
+    console.error("Ошибка при получении недвижимости:", {
       message: error.message,
       stack: error.stack,
+      query: req.query,
     });
-    res.status(500).json({ error: `Internal server error: ${error.message}` });
+    res.status(500).json({ error: `Ошибка сервера: ${error.message}` });
   } finally {
     if (connection) connection.release();
   }
