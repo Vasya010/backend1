@@ -1720,15 +1720,22 @@ app.get("/public/properties", async (req, res) => {
   } = req.query;
 
   let connection;
+  // Объявляем query и params до try, чтобы избежать ReferenceError
+  let query = `SELECT photos, description 
+               FROM properties WHERE 1=1`;
+  let params = [];
+
   try {
     connection = await pool.getConnection();
 
-    let query = `SELECT id, type_id, repair, series, zhk_id, price, mkv, rooms, district_id, subdistrict_id, 
-                        address, description, status, etaj, etajnost, photos 
-                 FROM properties WHERE 1=1`;
-    const params = [];
+    // Проверка существования таблицы
+    const [tables] = await connection.execute("SHOW TABLES LIKE 'properties'");
+    if (!tables.length) {
+      console.warn("Таблица properties не найдена");
+      return res.status(200).json([]);
+    }
 
-    // Validate and add bid
+    // Фильтр по bid
     if (bid && !isNaN(parseInt(bid))) {
       query += ` AND id = ?`;
       params.push(parseInt(bid));
@@ -1737,7 +1744,7 @@ app.get("/public/properties", async (req, res) => {
       return res.status(400).json({ error: "Недействительный параметр bid: должен быть числом" });
     }
 
-    // Add titles
+    // Фильтр по titles с использованием LIKE
     if (titles && typeof titles === "string" && titles.trim()) {
       query += ` AND (address LIKE ? OR description LIKE ?)`;
       params.push(`%${titles.trim()}%`, `%${titles.trim()}%`);
@@ -1746,7 +1753,7 @@ app.get("/public/properties", async (req, res) => {
       return res.status(400).json({ error: "Недействительный параметр titles: должен быть непустой строкой" });
     }
 
-    // Add ftype
+    // Фильтр по ftype
     if (ftype && ftype !== "all" && typeof ftype === "string") {
       query += ` AND type_id = ?`;
       params.push(ftype);
@@ -1755,7 +1762,7 @@ app.get("/public/properties", async (req, res) => {
       return res.status(400).json({ error: "Недействительный параметр ftype" });
     }
 
-    // Add fjk
+    // Фильтр по fjk
     if (fjk && fjk !== "all" && !isNaN(parseInt(fjk))) {
       query += ` AND zhk_id = ?`;
       params.push(parseInt(fjk));
@@ -1764,7 +1771,7 @@ app.get("/public/properties", async (req, res) => {
       return res.status(400).json({ error: "Недействительный параметр fjk: должен быть числом" });
     }
 
-    // Add fseria
+    // Фильтр по fseria
     if (fseria && fseria !== "all" && typeof fseria === "string") {
       query += ` AND series = ?`;
       params.push(fseria);
@@ -1773,7 +1780,7 @@ app.get("/public/properties", async (req, res) => {
       return res.status(400).json({ error: "Недействительный параметр fseria" });
     }
 
-    // Add fsost
+    // Фильтр по fsost
     if (fsost && fsost !== "all") {
       if (fsost === "3") {
         query += ` AND repair IS NULL`;
@@ -1789,7 +1796,7 @@ app.get("/public/properties", async (req, res) => {
       }
     }
 
-    // Add room
+    // Фильтр по room
     if (room && typeof room === "string" && room !== "") {
       query += ` AND rooms = ?`;
       params.push(room);
@@ -1798,7 +1805,7 @@ app.get("/public/properties", async (req, res) => {
       return res.status(400).json({ error: "Недействительный параметр room" });
     }
 
-    // Add frayon
+    // Фильтр по frayon
     if (frayon && frayon !== "all" && !isNaN(parseInt(frayon))) {
       query += ` AND district_id = ?`;
       params.push(parseInt(frayon));
@@ -1807,7 +1814,7 @@ app.get("/public/properties", async (req, res) => {
       return res.status(400).json({ error: "Недействительный параметр frayon: должен быть числом" });
     }
 
-    // Add fsubrayon
+    // Фильтр по fsubrayon
     if (fsubrayon && fsubrayon !== "all" && !isNaN(parseInt(fsubrayon))) {
       query += ` AND subdistrict_id = ?`;
       params.push(parseInt(fsubrayon));
@@ -1816,7 +1823,7 @@ app.get("/public/properties", async (req, res) => {
       return res.status(400).json({ error: "Недействительный параметр fsubrayon: должен быть числом" });
     }
 
-    // Add fprice
+    // Фильтр по fprice
     if (fprice && !isNaN(parseFloat(fprice))) {
       query += ` AND price >= ?`;
       params.push(parseFloat(fprice));
@@ -1825,7 +1832,7 @@ app.get("/public/properties", async (req, res) => {
       return res.status(400).json({ error: "Недействительный параметр fprice: должен быть числом" });
     }
 
-    // Add fpriceto
+    // Фильтр по fpriceto
     if (fpriceto && !isNaN(parseFloat(fpriceto))) {
       query += ` AND price <= ?`;
       params.push(parseFloat(fpriceto));
@@ -1834,7 +1841,7 @@ app.get("/public/properties", async (req, res) => {
       return res.status(400).json({ error: "Недействительный параметр fpriceto: должен быть числом" });
     }
 
-    // Add mkv
+    // Фильтр по mkv
     if (mkv && !isNaN(parseFloat(mkv))) {
       query += ` AND mkv >= ?`;
       params.push(parseFloat(mkv));
@@ -1843,7 +1850,7 @@ app.get("/public/properties", async (req, res) => {
       return res.status(400).json({ error: "Недействительный параметр mkv: должен быть числом" });
     }
 
-    // Add fetaj
+    // Фильтр по fetaj
     if (fetaj && fetaj !== "all") {
       if (fetaj === "4") {
         query += ` AND etaj >= ?`;
@@ -1857,7 +1864,7 @@ app.get("/public/properties", async (req, res) => {
       }
     }
 
-    // Add pagination
+    // Пагинация
     const parsedPage = parseInt(page);
     const parsedLimit = parseInt(limit);
     if (isNaN(parsedPage) || parsedPage < 1) {
@@ -1872,7 +1879,7 @@ app.get("/public/properties", async (req, res) => {
     query += ` LIMIT ? OFFSET ?`;
     params.push(parsedLimit, offset);
 
-    // Log the query and parameters for debugging
+    // Логирование запроса и параметров
     console.log("SQL запрос:", query);
     console.log("Параметры:", params);
 
@@ -1883,27 +1890,13 @@ app.get("/public/properties", async (req, res) => {
       try {
         parsedPhotos = row.photos ? JSON.parse(row.photos) : [];
       } catch (error) {
-        console.warn(`Ошибка парсинга photos для ID ${row.id}:`, error.message);
+        console.warn(`Ошибка парсинга photos для ID ${row.id || 'unknown'}:`, error.message);
         parsedPhotos = [];
       }
 
       return {
-        id: row.id,
-        type_id: row.type_id || null,
-        repair: row.repair || null,
-        series: row.series || null,
-        zhk_id: row.zhk_id || null,
-        price: row.price || null,
-        mkv: row.mkv || null,
-        rooms: row.rooms || null,
-        district_id: row.district_id || null,
-        subdistrict_id: row.subdistrict_id || null,
-        address: row.address || null,
-        description: row.description || null,
-        status: row.status || null,
-        etaj: row.etaj || null,
-        etajnost: row.etajnost || null,
         photos: parsedPhotos.map(img => `https://s3.twcstorage.ru/${bucketName}/${img}`),
+        description: row.description || null,
       };
     });
 
