@@ -756,6 +756,23 @@ app.get("/api/districts", authenticate, async (req, res) => {
   }
 });
 
+// Публичный эндпоинт для получения списка районов
+app.get("/public/districts", async (req, res) => {
+  let connection;
+  try {
+    connection = await pool.getConnection();
+    const [rows] = await connection.execute("SELECT id, name FROM districts");
+    res.json(rows);
+  } catch (error) {
+    console.error("Ошибка при получении районов:", {
+      message: error.message,
+      stack: error.stack,
+    });
+    res.status(500).json({ error: "Внутренняя ошибка сервера" });
+  } finally {
+    if (connection) connection.release();
+  }
+});
 // Get Subdistricts by District ID (Protected)
 app.get("/api/subdistricts", authenticate, async (req, res) => {
   const { district_id } = req.query;
