@@ -35,7 +35,12 @@ app.use(express.json());
 
 // Global Error Handler
 app.use((err, req, res, next) => {
-  console.error("Global error:", err.stack);
+  console.error("Global error:", {
+    message: err.message,
+    stack: err.stack,
+    path: req.path,
+    method: req.method
+  });
   res.status(500).json({ error: `Внутренняя ошибка сервера: ${err.message}` });
 });
 
@@ -44,17 +49,11 @@ const storage = multer.memoryStorage();
 const upload = multer({
   storage,
   fileFilter: (req, file, cb) => {
-    const filetypes = /jpeg|jpg|png|pdf|doc|docx/;
-    const extname = filetypes.test(path.extname(file.originalname).toLowerCase());
-    const mimetype = filetypes.test(file.mimetype);
-    if (extname && mimetype) {
-      console.log(`File ${file.originalname} accepted for upload`);
-      return cb(null, true);
-    }
-    console.error(`File ${file.originalname} rejected: invalid type`);
-    cb(new Error("Только изображения (jpeg, jpg, png) и документы (pdf, doc, docx) разрешены"));
+    // Разрешить файлы любого формата
+    console.log(`File ${file.originalname} accepted for upload`);
+    cb(null, true);
   },
-  limits: { fileSize: 15 * 1024 * 1024 }, // Лимит 15 МБ
+  limits: { fileSize: 100 * 1024 * 1024 }, // Лимит 100 МБ
 });
 
 // MySQL Connection Pool
@@ -92,7 +91,10 @@ const authenticate = async (req, res, next) => {
     req.user = { ...decoded, first_name: users[0].first_name, last_name: users[0].last_name };
     next();
   } catch (error) {
-    console.error("Authentication error:", error.message);
+    console.error("Authentication error:", {
+      message: error.message,
+      stack: error.stack
+    });
     res.status(401).json({ error: "Недействительный токен" });
   }
 };
@@ -136,6 +138,7 @@ async function testDatabaseConnection() {
           zhk_id VARCHAR(255) DEFAULT NULL,
           document_id INT NOT NULL DEFAULT 0,
           owner_name VARCHAR(255) DEFAULT NULL,
+          owner_phone VARCHAR(50) DEFAULT NULL,
           curator_id INT UNSIGNED DEFAULT NULL,
           price DECIMAL(15,2) NOT NULL,
           unit VARCHAR(50) DEFAULT NULL,
@@ -162,6 +165,17 @@ async function testDatabaseConnection() {
         ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
       `);
     } else {
+      // Check and add owner_phone column if not exists
+      const [ownerPhoneColumns] = await connection.execute(
+        "SHOW COLUMNS FROM properties LIKE 'owner_phone'"
+      );
+      if (ownerPhoneColumns.length === 0) {
+        console.log("Adding owner_phone column to properties table...");
+        await connection.execute(
+          "ALTER TABLE properties ADD COLUMN owner_phone VARCHAR(50) DEFAULT NULL"
+        );
+      }
+
       const [conditionColumns] = await connection.execute(
         "SHOW COLUMNS FROM properties LIKE 'condition'"
       );
@@ -243,7 +257,12 @@ async function testDatabaseConnection() {
 
     console.log("Admin login details:", { email: adminEmail, password: adminPassword, role: "SUPER_ADMIN" });
   } catch (error) {
-    console.error("Database setup error:", error.message);
+    console.error("Database setup error:", {
+      message: error.message,
+      code: error.code,
+      sqlMessage: error.sqlMessage,
+      stack: error.stack
+    });
     if (error.code === "ECONNREFUSED") {
       console.error("MySQL server not running or incorrect host/port.");
     }
@@ -302,7 +321,10 @@ app.post("/api/admin/login", async (req, res) => {
 
     res.json({ message: "Авторизация успешна", user: userResponse, token });
   } catch (error) {
-    console.error("Login error:", error.message);
+    console.error("Login error:", {
+      message: error.message,
+      stack: error.stack
+    });
     res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
   } finally {
     if (connection) connection.release();
@@ -317,7 +339,10 @@ app.post("/api/logout", authenticate, async (req, res) => {
     await connection.execute("UPDATE users1 SET token = NULL WHERE id = ?", [req.user.id]);
     res.json({ message: "Выход успешен" });
   } catch (error) {
-    console.error("Logout error:", error.message);
+    console.error("Logout error:", {
+      message: error.message,
+      stack: error.stack
+    });
     res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
   } finally {
     if (connection) connection.release();
@@ -345,7 +370,10 @@ app.get("/api/users", authenticate, async (req, res) => {
       }))
     );
   } catch (error) {
-    console.error("Error retrieving users:", error.message);
+    console.error("Error retrieving users:", {
+      message: error.message,
+      stack: error.stack
+    });
     res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
   } finally {
     if (connection) connection.release();
@@ -414,7 +442,10 @@ app.post("/api/users", authenticate, upload.single("photo"), async (req, res) =>
 
     res.json(newUser);
   } catch (error) {
-    console.error("Error creating user:", error.message);
+    console.error("Error creating user:", {
+      message: error.message,
+      stack: error.stack
+    });
     res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
   } finally {
     if (connection) connection.release();
@@ -493,7 +524,10 @@ app.put("/api/users/:id", authenticate, upload.single("photo"), async (req, res)
 
     res.json(updatedUser);
   } catch (error) {
-    console.error("Error updating user:", error.message);
+    console.error("Error updating user:", {
+      message: error.message,
+      stack: error.stack
+    });
     res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
   } finally {
     if (connection) connection.release();
@@ -527,7 +561,10 @@ app.delete("/api/users/:id", authenticate, async (req, res) => {
     await connection.execute("DELETE FROM users1 WHERE id = ?", [id]);
     res.json({ message: "Пользователь успешно удалён" });
   } catch (error) {
-    console.error("Error deleting user:", error.message);
+    console.error("Error deleting user:", {
+      message: error.message,
+      stack: error.stack
+    });
     res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
   } finally {
     if (connection) connection.release();
@@ -542,7 +579,10 @@ app.get("/api/jk", authenticate, async (req, res) => {
     const [rows] = await connection.execute("SELECT id, name, description, address FROM jk");
     res.json(rows);
   } catch (error) {
-    console.error("Error retrieving JK:", error.message);
+    console.error("Error retrieving JK:", {
+      message: error.message,
+      stack: error.stack
+    });
     res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
   } finally {
     if (connection) connection.release();
@@ -575,7 +615,10 @@ app.post("/api/jk", authenticate, async (req, res) => {
 
     res.json({ id: result.insertId, name, description, address });
   } catch (error) {
-    console.error("Error creating JK:", error.message);
+    console.error("Error creating JK:", {
+      message: error.message,
+      stack: error.stack
+    });
     res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
   } finally {
     if (connection) connection.release();
@@ -614,7 +657,10 @@ app.put("/api/jk/:id", authenticate, async (req, res) => {
 
     res.json({ id: parseInt(id), name, description, address });
   } catch (error) {
-    console.error("Error updating JK:", error.message);
+    console.error("Error updating JK:", {
+      message: error.message,
+      stack: error.stack
+    });
     res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
   } finally {
     if (connection) connection.release();
@@ -645,7 +691,10 @@ app.delete("/api/jk/:id", authenticate, async (req, res) => {
     await connection.execute("DELETE FROM jk WHERE id = ?", [id]);
     res.json({ message: "ЖК успешно удалён" });
   } catch (error) {
-    console.error("Error deleting JK:", error.message);
+    console.error("Error deleting JK:", {
+      message: error.message,
+      stack: error.stack
+    });
     res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
   } finally {
     if (connection) connection.release();
@@ -660,7 +709,10 @@ app.get("/api/districts", authenticate, async (req, res) => {
     const [rows] = await connection.execute("SELECT id, name FROM districts");
     res.json(rows);
   } catch (error) {
-    console.error("Error retrieving districts:", error.message);
+    console.error("Error retrieving districts:", {
+      message: error.message,
+      stack: error.stack
+    });
     res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
   } finally {
     if (connection) connection.release();
@@ -683,7 +735,10 @@ app.get("/api/subdistricts", authenticate, async (req, res) => {
     );
     res.json(rows);
   } catch (error) {
-    console.error("Error retrieving subdistricts:", error.message);
+    console.error("Error retrieving subdistricts:", {
+      message: error.message,
+      stack: error.stack
+    });
     res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
   } finally {
     if (connection) connection.release();
@@ -705,7 +760,10 @@ app.get("/api/raions", authenticate, async (req, res) => {
 
     res.json(raions);
   } catch (error) {
-    console.error("Error retrieving districts and subdistricts:", error.message);
+    console.error("Error retrieving districts and subdistricts:", {
+      message: error.message,
+      stack: error.stack
+    });
     res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
   } finally {
     if (connection) connection.release();
@@ -738,7 +796,10 @@ app.post("/api/raions", authenticate, async (req, res) => {
 
     res.json({ id: result.insertId, name, parentRaionId: null, isRaion: true });
   } catch (error) {
-    console.error("Ошибка при создании района:", error.message);
+    console.error("Ошибка при создании района:", {
+      message: error.message,
+      stack: error.stack
+    });
     res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
   } finally {
     if (connection) connection.release();
@@ -773,7 +834,10 @@ app.put("/api/raions/:id", authenticate, async (req, res) => {
     await connection.execute("UPDATE districts SET name = ? WHERE id = ?", [name, id]);
     res.json({ id: parseInt(id), name, parentRaionId: null, isRaion: true });
   } catch (error) {
-    console.error("Ошибка при обновлении района:", error.message);
+    console.error("Ошибка при обновлении района:", {
+      message: error.message,
+      stack: error.stack
+    });
     res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
   } finally {
     if (connection) connection.release();
@@ -804,7 +868,10 @@ app.delete("/api/raions/:id", authenticate, async (req, res) => {
     await connection.execute("DELETE FROM districts WHERE id = ?", [id]);
     res.json({ message: "Район успешно удалён" });
   } catch (error) {
-    console.error("Ошибка при удалении района:", error.message);
+    console.error("Ошибка при удалении района:", {
+      message: error.message,
+      stack: error.stack
+    });
     res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
   } finally {
     if (connection) connection.release();
@@ -845,7 +912,10 @@ app.post("/api/subraions", authenticate, async (req, res) => {
 
     res.json({ id: result.insertId, name, parentRaionId, isRaion: false });
   } catch (error) {
-    console.error("Ошибка при создании микрорайона:", error.message);
+    console.error("Ошибка при создании микрорайона:", {
+      message: error.message,
+      stack: error.stack
+    });
     res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
   } finally {
     if (connection) connection.release();
@@ -892,7 +962,10 @@ app.put("/api/subraions/:id", authenticate, async (req, res) => {
 
     res.json({ id: parseInt(id), name, parentRaionId, isRaion: false });
   } catch (error) {
-    console.error("Ошибка при обновлении микрорайона:", error.message);
+    console.error("Ошибка при обновлении микрорайона:", {
+      message: error.message,
+      stack: error.stack
+    });
     res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
   } finally {
     if (connection) connection.release();
@@ -923,7 +996,10 @@ app.delete("/api/subraions/:id", authenticate, async (req, res) => {
     await connection.execute("DELETE FROM subdistricts WHERE id = ?", [id]);
     res.json({ message: "Микрорайон успешно удалён" });
   } catch (error) {
-    console.error("Ошибка при удалении микрорайона:", error.message);
+    console.error("Ошибка при удалении микрорайона:", {
+      message: error.message,
+      stack: error.stack
+    });
     res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
   } finally {
     if (connection) connection.release();
@@ -945,6 +1021,7 @@ app.post("/api/properties", authenticate, upload.fields([
     series,
     zhk_id,
     owner_name,
+    owner_phone,
     curator_id,
     price,
     unit,
@@ -1083,9 +1160,9 @@ app.post("/api/properties", authenticate, upload.fields([
     const photosJson = photos.length > 0 ? JSON.stringify(photos.map(img => img.filename)) : null;
     const [result] = await connection.execute(
       `INSERT INTO properties (
-        type_id, repair, series, zhk_id, document_id, owner_name, curator_id, price, unit, rukprice, mkv, rooms, phone, 
+        type_id, repair, series, zhk_id, document_id, owner_name, owner_phone, curator_id, price, unit, rukprice, mkv, rooms, phone, 
         district_id, subdistrict_id, address, notes, description, photos, document, status, owner_id, etaj, etajnost
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         type_id || null,
         repair || null,
@@ -1093,6 +1170,7 @@ app.post("/api/properties", authenticate, upload.fields([
         zhk_id || null,
         0,
         owner_name || null,
+        owner_phone || null,
         finalCuratorId,
         price,
         unit || null,
@@ -1122,6 +1200,7 @@ app.post("/api/properties", authenticate, upload.fields([
       zhk_id,
       document_id: 0,
       owner_name,
+      owner_phone,
       curator_id: finalCuratorId,
       curator_name: curatorName || null,
       price,
@@ -1147,7 +1226,10 @@ app.post("/api/properties", authenticate, upload.fields([
 
     res.json(newProperty);
   } catch (error) {
-    console.error("Error creating property:", error.message);
+    console.error("Error creating property:", {
+      message: error.message,
+      stack: error.stack
+    });
     res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
   } finally {
     if (connection) connection.release();
@@ -1170,6 +1252,7 @@ app.put("/api/properties/:id", authenticate, upload.fields([
     series,
     zhk_id,
     owner_name,
+    owner_phone,
     curator_id,
     price,
     unit,
@@ -1242,7 +1325,7 @@ app.put("/api/properties/:id", authenticate, upload.fields([
   try {
     connection = await pool.getConnection();
     const [existingProperties] = await connection.execute(
-      "SELECT photos, document, curator_id FROM properties WHERE id = ?",
+      "SELECT photos, document, curator_id, owner_phone FROM properties WHERE id = ?",
       [id]
     );
     if (existingProperties.length === 0) {
@@ -1366,7 +1449,7 @@ app.put("/api/properties/:id", authenticate, upload.fields([
 
     await connection.execute(
       `UPDATE properties SET
-        type_id = ?, repair = ?, series = ?, zhk_id = ?, document_id = ?, owner_name = ?, curator_id = ?, price = ?, unit = ?, rukprice = ?, mkv = ?, rooms = ?, phone = ?,
+        type_id = ?, repair = ?, series = ?, zhk_id = ?, document_id = ?, owner_name = ?, owner_phone = ?, curator_id = ?, price = ?, unit = ?, rukprice = ?, mkv = ?, rooms = ?, phone = ?,
         district_id = ?, subdistrict_id = ?, address = ?, notes = ?, description = ?, photos = ?, document = ?, status = ?, owner_id = ?, etaj = ?, etajnost = ?
         WHERE id = ?`,
       [
@@ -1376,6 +1459,7 @@ app.put("/api/properties/:id", authenticate, upload.fields([
         zhk_id || null,
         0,
         owner_name || null,
+        owner_phone || null,
         finalCuratorId,
         price,
         unit || null,
@@ -1406,6 +1490,7 @@ app.put("/api/properties/:id", authenticate, upload.fields([
       zhk_id,
       document_id: 0,
       owner_name,
+      owner_phone,
       curator_id: finalCuratorId,
       curator_name: curatorName || null,
       price,
@@ -1431,7 +1516,10 @@ app.put("/api/properties/:id", authenticate, upload.fields([
 
     res.json(updatedProperty);
   } catch (error) {
-    console.error("Error updating property:", error.message);
+    console.error("Error updating property:", {
+      message: error.message,
+      stack: error.stack
+    });
     res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
   } finally {
     if (connection) connection.release();
@@ -1490,7 +1578,10 @@ app.delete("/api/properties/:id", authenticate, async (req, res) => {
     await connection.execute("DELETE FROM properties WHERE id = ?", [id]);
     res.json({ message: "Объект недвижимости успешно удалён" });
   } catch (error) {
-    console.error("Error deleting property:", error.message);
+    console.error("Error deleting property:", {
+      message: error.message,
+      stack: error.stack
+    });
     res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
   } finally {
     if (connection) connection.release();
@@ -1523,6 +1614,7 @@ app.get("/api/properties", authenticate, async (req, res) => {
         ...row,
         repair: row.repair || null,
         rooms: row.rooms || null,
+        owner_phone: row.owner_phone || null,
         photos: parsedPhotos.map(img => `https://s3.twcstorage.ru/${bucketName}/${img}`),
         document: row.document ? `https://s3.twcstorage.ru/${bucketName}/${row.document}` : null,
         date: new Date(row.created_at).toLocaleDateString("ru-RU"),
@@ -1533,7 +1625,10 @@ app.get("/api/properties", authenticate, async (req, res) => {
 
     res.json(properties);
   } catch (error) {
-    console.error("Error retrieving properties:", error.message);
+    console.error("Error retrieving properties:", {
+      message: error.message,
+      stack: error.stack
+    });
     res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
   } finally {
     if (connection) connection.release();
@@ -1561,7 +1656,10 @@ app.get("/api/listings", authenticate, async (req, res) => {
 
     res.json(listings);
   } catch (error) {
-    console.error("Error retrieving listings:", error.message);
+    console.error("Error retrieving listings:", {
+      message: error.message,
+      stack: error.stack
+    });
     res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
   } finally {
     if (connection) connection.release();
@@ -1611,7 +1709,10 @@ app.patch("/api/properties/redirect", authenticate, async (req, res) => {
 
     res.json({ message: "Объекты недвижимости успешно перенаправлены", affectedRows: result.affectedRows });
   } catch (error) {
-    console.error("Error redirecting properties:", error.message);
+    console.error("Error redirecting properties:", {
+      message: error.message,
+      stack: error.stack
+    });
     res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
   } finally {
     if (connection) connection.release();
