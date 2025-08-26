@@ -32,11 +32,15 @@ const bucketName = process.env.S3_BUCKET || "a2c31109-3cf2c97b-aca1-42b0-a822-3e
 
 
 
-// CORS Middleware with specific configuration
 app.use(cors({
-  origin: ['https://alatooned.ru', 'http://cs51703.tw1.ru'],
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
+  origin: [
+    'https://alatooned.ru',
+    'http://cs51703.tw1.ru',
+    'http://localhost:5173'
+  ],
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
+  credentials: true, // если нужны cookie/JWT в заголовках
 }));
 
 // JSON Middleware
