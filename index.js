@@ -49,9 +49,30 @@ const storage = multer.memoryStorage();
 const upload = multer({
   storage,
   fileFilter: (req, file, cb) => {
-    // Разрешить файлы любого формата
-    console.log(`File ${file.originalname} accepted for upload`);
-    cb(null, true);
+    // List of common image MIME types
+    const allowedImageTypes = [
+      'image/jpeg',          // .jpg, .jpeg
+      'image/png',           // .png
+      'image/gif',           // .gif
+      'image/bmp',           // .bmp
+      'image/tiff',          // .tiff, .tif
+      'image/webp',          // .webp
+      'image/heic',          // .heic (iPhone HEIF format)
+      'image/heif',          // .heif
+      'image/svg+xml',       // .svg
+      'image/x-icon',        // .ico
+      'image/vnd.microsoft.icon', // .ico (alternate MIME type)
+      'image/jp2',           // .jp2 (JPEG 2000)
+      'image/avif'           // .avif
+    ];
+
+    if (allowedImageTypes.includes(file.mimetype)) {
+      console.log(`File ${file.originalname} accepted for upload`);
+      cb(null, true);
+    } else {
+      console.error(`File ${file.originalname} rejected: Invalid MIME type ${file.mimetype}`);
+      cb(new Error('Недопустимый формат файла. Разрешены только изображения (JPEG, PNG, GIF, BMP, TIFF, WebP, HEIC, HEIF, SVG, ICO, JP2, AVIF).'), false);
+    }
   },
   limits: { fileSize: 100 * 1024 * 1024 }, // Лимит 100 МБ
 });
