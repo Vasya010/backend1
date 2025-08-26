@@ -1811,6 +1811,34 @@ app.get("/public/properties/types", async (req, res) => {
 });
 
 
+// Публичный эндпоинт для получения микрорайонов
+app.get("/public/subdistricts", async (req, res) => {
+  const { district_id } = req.query;
+  if (!district_id) {
+    return res.status(400).json({ error: "district_id обязателен" });
+  }
+
+  let connection;
+  try {
+    connection = await pool.getConnection();
+    const [rows] = await connection.execute(
+      "SELECT id, name FROM subdistricts WHERE district_id = ?",
+      [district_id]
+    );
+    console.log('Микрорайоны для district_id:', district_id, rows); // Для отладки
+    res.json(rows);
+  } catch (error) {
+    console.error("Ошибка при получении микрорайонов:", {
+      message: error.message,
+      stack: error.stack,
+    });
+    res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
+
 // Публичный эндпоинт для получения списка недвижимости с фильтрацией
 // Публичный эндпоинт для получения списка недвижимости с фильтрацией
 app.get("/public/properties", async (req, res) => {
