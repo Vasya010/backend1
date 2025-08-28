@@ -1749,20 +1749,6 @@ app.get("/public/jk", async (req, res) => {
   }
 });
 
-// Public endpoint for JK (zhk)
-app.get("/public/jk", async (req, res) => {
-  let connection;
-  try {
-    connection = await pool.getConnection();
-    const [rows] = await connection.execute("SELECT id, name FROM jk");
-    res.json(rows);
-  } catch (error) {
-    console.error("Error fetching JK:", error);
-    res.status(500).json({ error: "Internal server error" });
-  } finally {
-    if (connection) connection.release();
-  }
-});
 
 // Public endpoint for subdistricts
 app.get("/public/subdistricts", async (req, res) => {
@@ -1790,36 +1776,36 @@ app.get("/public/subdistricts", async (req, res) => {
 
 // Endpoint для типов недвижимости
 app.get("/public/properties/types", async (req, res) => {
-let connection;
-try {
-connection = await pool.getConnection();
-// Проверяем существование таблицы
-const [tables] = await connection.execute("SHOW TABLES LIKE 'properties'");
-if (!tables.length) {
-console.warn("Таблица properties не найдена");
-return res.status(200).json([]);
-}
+  let connection;
+  try {
+    console.log("Запрос на /public/properties/types от:", req.get('origin'));
+    connection = await pool.getConnection();
+    const [tables] = await connection.execute("SHOW TABLES LIKE 'properties'");
+    if (!tables.length) {
+      console.warn("Таблица properties не найдена");
+      return res.status(200).json([]);
+    }
 
-
-const [rows] = await connection.execute(
-"SELECT DISTINCT type_id FROM properties WHERE type_id IS NOT NULL"
-);
-if (!rows.length) {
-console.warn("Типы недвижимости не найдены в базе данных");
-return res.status(200).json([]);
-}
-const types = rows.map(row => row.type_id);
-console.log("Полученные типы недвижимости:", types);
-res.status(200).json(types);
-} catch (error) {
-console.error("Ошибка при получении типов недвижимости:", {
-message: error.message,
-stack: error.stack,
-});
-res.status(500).json({ error: `Ошибка сервера: ${error.message}` });
-} finally {
-if (connection) connection.release();
-}
+    const [rows] = await connection.execute(
+      "SELECT DISTINCT type_id FROM properties WHERE type_id IS NOT NULL"
+    );
+    if (!rows.length) {
+      console.warn("Типы недвижимости не найдены в базе данных");
+      return res.status(200).json([]);
+    }
+    const types = rows.map(row => row.type_id);
+    console.log("Полученные типы недвижимости:", types);
+    res.status(200).json(types);
+  } catch (error) {
+    console.error("Ошибка при получении типов недвижимости:", {
+      message: error.message,
+      stack: error.stack,
+      origin: req.get('origin')
+    });
+    res.status(500).json({ error: `Ошибка сервера: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
+  }
 });
 
 // Endpoint для списка недвижимости
