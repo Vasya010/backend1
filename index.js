@@ -32,19 +32,30 @@ const bucketName = process.env.S3_BUCKET || "a2c31109-3cf2c97b-aca1-42b0-a822-3e
 
 
 
+// Настройка CORS
 app.use(cors({
-  origin: [
-    'https://alatooned.ru',
-    'https://alatooned.com',
-    'http://localhost:5173'
-  ],
+  origin: (origin, callback) => {
+    const allowedOrigins = [
+      'https://alatooned.ru',
+      'https://alatooned.com',
+      'http://localhost:5173',
+      undefined // Для серверных запросов (например, Postman)
+    ];
+    if (allowedOrigins.includes(origin)) {
+      callback(null, origin || '*');
+    } else {
+      callback(new Error('CORS: Origin not allowed'));
+    }
+  },
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
-  credentials: true, // если нужны cookie/JWT в заголовках
+  credentials: true,
+  optionsSuccessStatus: 204 // Успешный статус для OPTIONS запросов
 }));
 
 // JSON Middleware
 app.use(express.json());
+app.options('*', cors());
 
 // Global Error Handler
 app.use((err, req, res, next) => {
