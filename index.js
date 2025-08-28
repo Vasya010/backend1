@@ -1721,6 +1721,85 @@ app.get("/api/listings", authenticate, async (req, res) => {
 
 
 
+app.get("/public/properties/:id", async (req, res) => {
+  const { id } = req.params;
+
+  if (!id || isNaN(parseInt(id))) {
+    console.warn("Invalid property ID:", id);
+    return res.status(400).json({ error: "ID объекта должен быть числом" });
+  }
+
+  let connection;
+  try {
+    console.log(`Запрос на /public/properties/${id} от:`, req.get('origin'));
+    connection = await pool.getConnection();
+
+    const [rows] = await connection.execute(
+      `SELECT id, type_id, repair, series, zhk_id, price, mkv, rooms, district_id, subdistrict_id, 
+              address, description, notes, status, etaj, etajnost, photos, document, owner_name, 
+              owner_phone, curator_id, phone, owner_id, latitude, longitude
+       FROM properties WHERE id = ?`,
+      [parseInt(id)]
+    );
+
+    if (rows.length === 0) {
+      console.warn(`Объект с ID ${id} не найден`);
+      return res.status(404).json({ error: "Объект недвижимости не найден" });
+    }
+
+    const row = rows[0];
+    let parsedPhotos = [];
+    try {
+      parsedPhotos = row.photos ? JSON.parse(row.photos) : [];
+    } catch (error) {
+      console.warn(`Ошибка парсинга photos для ID ${id}:`, error.message);
+      parsedPhotos = [];
+    }
+
+    const property = {
+      id: row.id,
+      type_id: row.type_id || null,
+      repair: row.repair || null,
+      series: row.series || null,
+      zhk_id: row.zhk_id || null,
+      price: row.price || null,
+      mkv: row.mkv || null,
+      rooms: row.rooms || null,
+      district_id: row.district_id || null,
+      subdistrict_id: row.subdistrict_id || null,
+      address: row.address || null,
+      description: row.description || null,
+      notes: row.notes || null,
+      status: row.status || null,
+      etaj: row.etaj || null,
+      etajnost: row.etajnost || null,
+      photos: parsedPhotos.map(img => `https://s3.twcstorage.ru/${bucketName}/${img}`),
+      document: row.document ? `https://s3.twcstorage.ru/${bucketName}/${row.document}` : null,
+      owner_name: row.owner_name || null,
+      owner_phone: row.owner_phone || null,
+      curator_id: row.curator_id || null,
+      phone: row.phone || null,
+      owner_id: row.owner_id || null,
+      latitude: row.latitude || null,
+      longitude: row.longitude || null,
+      date: new Date(row.created_at).toLocaleDateString("ru-RU"),
+      time: new Date(row.created_at).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })
+    };
+
+    res.status(200).json(property);
+  } catch (error) {
+    console.error(`Ошибка при получении объекта с ID ${id}:`, {
+      message: error.message,
+      stack: error.stack,
+      origin: req.get('origin')
+    });
+    res.status(500).json({ error: `Ошибка сервера: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
+
 app.get("/public/properties/curator-phone", async (req, res) => {
   const { curator_id } = req.query;
 
