@@ -1808,6 +1808,48 @@ app.get("/public/properties/types", async (req, res) => {
   }
 });
 
+
+
+app.get("/public/properties/curator-phone", async (req, res) => {
+  const { curator_id } = req.query;
+
+  if (!curator_id || isNaN(parseInt(curator_id))) {
+    console.warn("Invalid curator_id:", curator_id);
+    return res.status(400).json({ error: "curator_id обязателен и должен быть числом" });
+  }
+
+  let connection;
+  try {
+    console.log("Запрос на /public/properties/curator-phone от:", req.get('origin'), "с curator_id:", curator_id);
+    connection = await pool.getConnection();
+
+    const [users] = await connection.execute(
+      "SELECT phone FROM users1 WHERE id = ?",
+      [parseInt(curator_id)]
+    );
+
+    if (users.length === 0) {
+      console.warn("Куратор с ID", curator_id, "не найден");
+      return res.status(404).json({ error: "Куратор не найден" });
+    }
+
+    const phone = users[0].phone;
+    console.log("Номер телефона куратора:", phone);
+    res.status(200).json({ phone });
+  } catch (error) {
+    console.error("Ошибка при получении номера телефона куратора:", {
+      message: error.message,
+      stack: error.stack,
+      origin: req.get('origin'),
+      curator_id
+    });
+    res.status(500).json({ error: `Ошибка сервера: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
+
 // Endpoint для списка недвижимости
 app.get("/public/properties", async (req, res) => {
   const {
