@@ -1800,6 +1800,185 @@ app.get("/public/properties/:id", async (req, res) => {
 });
 
 
+// Public endpoint for AI-related properties
+app.get("/aipublic/properties", async (req, res) => {
+  const {
+    bid,
+    titles,
+    ftype,
+    fjk,
+    fseria,
+    fsost,
+    room,
+    frayon,
+    fsubrayon,
+    fprice,
+    fpriceto,
+    mkv,
+    fetaj,
+    page = 1,
+    limit = 30,
+  } = req.query;
+
+  let connection;
+  let query = `SELECT id, type_id, repair, series, zhk_id, price, mkv, rooms, district_id, subdistrict_id,
+                      address, description, status, etaj, etajnost, photos
+               FROM properties WHERE 1=1`;
+  let params = [];
+
+  try {
+    connection = await pool.getConnection();
+    if (!connection) {
+      throw new Error("Не удалось установить соединение с базой данных");
+    }
+
+    // Check if properties table exists
+    const [tables] = await connection.execute("SHOW TABLES LIKE 'properties'");
+    if (!tables.length) {
+      console.warn("Таблица properties не найдена");
+      return res.status(200).json([]);
+    }
+
+    // Filters
+    if (bid && !isNaN(parseInt(bid))) {
+      query += ` AND id = ?`;
+      params.push(parseInt(bid));
+    } else if (bid) {
+      return res.status(400).json({ error: "Недействительный параметр bid: должен быть числом" });
+    }
+
+    if (titles && typeof titles === "string" && titles.trim()) {
+      query += ` AND (address LIKE ? OR description LIKE ?)`;
+      params.push(`%${titles.trim()}%`, `%${titles.trim()}%`);
+    }
+
+    if (ftype && ftype !== "all" && typeof ftype === "string") {
+      query += ` AND type_id = ?`;
+      params.push(ftype);
+    }
+
+    if (fjk && fjk !== "all" && typeof fjk === "string") {
+      query += ` AND zhk_id = ?`;
+      params.push(fjk);
+    }
+
+    if (fseria && fseria !== "all" && typeof fseria === "string") {
+      query += ` AND series = ?`;
+      params.push(fseria);
+    }
+
+    if (fsost && fsost !== "all") {
+      if (fsost === "3") {
+        query += ` AND repair IS NULL`;
+      } else if (fsost === "1") {
+        query += ` AND repair = ?`;
+        params.push("ПСО");
+      } else if (fsost === "2") {
+        query += ` AND repair = ?`;
+        params.push("С отделкой");
+      }
+    }
+
+    if (room && typeof room === "string" && room !== "") {
+      query += ` AND rooms = ?`;
+      params.push(room);
+    }
+
+    if (frayon && frayon !== "all" && typeof frayon === "string") {
+      query += ` AND district_id = ?`;
+      params.push(frayon);
+    }
+
+    if (fsubrayon && fsubrayon !== "all" && typeof fsubrayon === "string") {
+      query += ` AND subdistrict_id = ?`;
+      params.push(fsubrayon);
+    }
+
+    if (fprice && !isNaN(parseFloat(fprice))) {
+      query += ` AND price >= ?`;
+      params.push(parseFloat(fprice));
+    }
+
+    if (fpriceto && !isNaN(parseFloat(fpriceto))) {
+      query += ` AND price <= ?`;
+      params.push(parseFloat(fpriceto));
+    }
+
+    if (mkv && !isNaN(parseFloat(mkv))) {
+      query += ` AND mkv >= ?`;
+      params.push(parseFloat(mkv));
+    }
+
+    if (fetaj && fetaj !== "all") {
+      if (fetaj === "4") {
+        query += ` AND etaj >= ?`;
+        params.push(4);
+      } else if (!isNaN(parseInt(fetaj))) {
+        query += ` AND etaj = ?`;
+        params.push(parseInt(fetaj));
+      }
+    }
+
+    // Pagination
+    const parsedPage = parseInt(page);
+    const parsedLimit = parseInt(limit);
+    if (isNaN(parsedPage) || parsedPage < 1) {
+      return res.status(400).json({ error: "Недействительный параметр page: должен быть числом >= 1" });
+    }
+    if (isNaN(parsedLimit) || parsedLimit < 1) {
+      return res.status(400).json({ error: "Недействительный параметр limit: должен быть числом >= 1" });
+    }
+    const offset = (parsedPage - 1) * parsedLimit;
+    query += ` LIMIT ${parsedLimit} OFFSET ${offset}`;
+
+    console.log("SQL запрос:", query);
+    console.log("Параметры:", params);
+
+    const [rows] = await connection.execute(query, params);
+
+    const properties = rows.map(row => {
+      let parsedPhotos = [];
+      try {
+        parsedPhotos = row.photos ? JSON.parse(row.photos) : [];
+      } catch (error) {
+        console.warn(`Ошибка парсинга photos для ID ${row.id}:`, error.message);
+        parsedPhotos = [];
+      }
+      return {
+        id: row.id,
+        type_id: row.type_id || null,
+        repair: row.repair || null,
+        series: row.series || null,
+        zhk_id: row.zhk_id || null,
+        price: row.price || null,
+        mkv: row.mkv || null,
+        rooms: row.rooms || null,
+        district_id: row.district_id || null,
+        subdistrict_id: row.subdistrict_id || null,
+        address: row.address || null,
+        description: row.description || null,
+        status: row.status || null,
+        etaj: row.etaj || null,
+        etajnost: row.etajnost || null,
+        photos: parsedPhotos.map(img => `https://s3.twcstorage.ru/${bucketName}/${img}`),
+      };
+    });
+
+    res.status(200).json(properties);
+  } catch (error) {
+    console.error("Ошибка при получении недвижимости:", {
+      message: error.message,
+      stack: error.stack,
+      query: req.query,
+      sqlQuery: query,
+      sqlParams: params,
+    });
+    res.status(500).json({ error: `Ошибка сервера: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
 app.get("/public/properties/curator-phone", async (req, res) => {
   const { curator_id } = req.query;
 
