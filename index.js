@@ -2299,56 +2299,65 @@ app.get('/api/messages/:clientId', async (req, res) => {
 });
 // POST messages endpoint (public)
 app.post('/api/messages', async (req, res) => {
+  console.log('Получен POST запрос /api/messages:', req.body);
+
   let { client_id, message, sender } = req.body;
 
-  // Assign a random client_id for anonymous users if not provided
+  // Валидация входных данных
+  if (typeof message !== 'string' || !message.trim()) {
+    return res.status(400).json({ error: 'Сообщение должно быть непустой строкой' });
+  }
+  if (!sender || (sender !== 'client' && sender !== 'agent')) {
+    return res.status(400).json({ error: 'Отправитель должен быть "client" или "agent"' });
+  }
   if (!client_id) {
-    client_id = Math.floor(Math.random() * 1000000) + 1; // Simple random ID
-    sender = sender || 'client'; // Default to 'client' if not specified
-  }
-
-  if (!client_id || !message || !sender) {
-    return res.status(400).json({ error: 'Клиент, сообщение и отправитель обязательны' });
-  }
-  if (!Number.isInteger(client_id) || client_id < 0) {
-    return res.status(400).json({ error: 'client_id должен быть положительным целым числом' });
-  }
-  if (sender !== 'client' && sender !== 'agent') {
-    return res.status(400).json({ error: 'sender должен быть "client" или "agent"' });
+    client_id = Math.floor(Math.random() * 1000000) + 1;
+    console.log('Сгенерирован новый client_id:', client_id);
+  } else if (!Number.isInteger(client_id) || client_id < 0 || client_id > 4294967295) {
+    return res.status(400).json({ error: 'client_id должен быть положительным целым числом (UNSIGNED INT)' });
   }
 
   try {
-    // Insert the user's message
+    // Вставка сообщения пользователя
     const [result] = await pool.query(
       'INSERT INTO messages (client_id, message, sender, is_read) VALUES (?, ?, ?, ?)',
-      [client_id, message, sender, sender === 'agent' ? true : false]
+      [client_id, message, sender, sender === 'agent' ? 1 : 0]
     );
-    const [newMessage] = await pool.query('SELECT * FROM messages WHERE id = ?', [result.insertId]);
+    console.log('Сообщение сохранено, ID:', result.insertId);
 
-    // Send an auto-reply
+    // Получение сохранённого сообщения
+    const [newMessage] = await pool.query('SELECT * FROM messages WHERE id = ?', [result.insertId]);
+    if (!newMessage[0]) {
+      throw new Error('Не удалось получить новое сообщение');
+    }
+
+    // Вставка автоответа
     const autoReply = {
       client_id,
       message: 'Ваше сообщение получено! Мы ответим в ближайшее время.',
       sender: 'agent',
-      is_read: true
+      is_read: 1
     };
     await pool.query(
       'INSERT INTO messages (client_id, message, sender, is_read) VALUES (?, ?, ?, ?)',
       [autoReply.client_id, autoReply.message, autoReply.sender, autoReply.is_read]
     );
+    console.log('Автоответ успешно отправлен');
 
+    // Ответ клиенту
     res.json({
       message: newMessage[0],
-      clientId: client_id // Return clientId for anonymous users
+      clientId: client_id
     });
   } catch (err) {
     console.error('Ошибка отправки сообщения:', {
       message: err.message,
       sql: err.sql,
       code: err.code,
-      errno: err.errno
+      errno: err.errno,
+      stack: err.stack
     });
-    res.status(500).json({ error: 'Ошибка сервера' });
+    res.status(500).json({ error: 'Ошибка сервера при обработке сообщения' });
   }
 });
 
