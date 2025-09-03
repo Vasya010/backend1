@@ -32,9 +32,19 @@ const bucketName = process.env.S3_BUCKET || "a2c31109-3cf2c97b-aca1-42b0-a822-3e
 
 
 
+const allowedOrigins = [
+  "http://localhost:3000",
+  "https://alatooned.ru",
+  "https://alatooned.com"
+];
+
 app.use(cors({
   origin: (origin, callback) => {
-    callback(null, origin || "*");
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, origin); // отдаём именно origin
+    } else {
+      callback(new Error("CORS not allowed"));
+    }
   },
   credentials: true,
   methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
