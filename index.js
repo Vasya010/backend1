@@ -2278,7 +2278,8 @@ app.get('/api/clients', authenticate, async (req, res) => {
 });
 
 // Эндпоинты для сообщений
-app.get('/api/messages/:clientId', authenticate, async (req, res) => {
+// GET messages endpoint (public)
+app.get('/api/messages/:clientId', async (req, res) => {
   const { clientId } = req.params;
   if (!Number.isInteger(Number(clientId)) || Number(clientId) < 0) {
     return res.status(400).json({ error: 'clientId должен быть положительным целым числом' });
@@ -2287,28 +2288,66 @@ app.get('/api/messages/:clientId', authenticate, async (req, res) => {
     const [messages] = await pool.query('SELECT * FROM messages WHERE client_id = ? ORDER BY timestamp ASC', [clientId]);
     res.json(messages);
   } catch (err) {
-    console.error('Ошибка получения сообщений:', err);
+    console.error('Ошибка получения сообщений:', {
+      message: err.message,
+      sql: err.sql,
+      code: err.code,
+      errno: err.errno
+    });
     res.status(500).json({ error: 'Ошибка сервера' });
   }
 });
+// POST messages endpoint (public)
+app.post('/api/messages', async (req, res) => {
+  let { client_id, message, sender } = req.body;
 
-app.post('/api/messages', authenticate, async (req, res) => {
-  const { client_id, message, sender } = req.body;
+  // Assign a random client_id for anonymous users if not provided
+  if (!client_id) {
+    client_id = Math.floor(Math.random() * 1000000) + 1; // Simple random ID
+    sender = sender || 'client'; // Default to 'client' if not specified
+  }
+
   if (!client_id || !message || !sender) {
     return res.status(400).json({ error: 'Клиент, сообщение и отправитель обязательны' });
   }
   if (!Number.isInteger(client_id) || client_id < 0) {
     return res.status(400).json({ error: 'client_id должен быть положительным целым числом' });
   }
+  if (sender !== 'client' && sender !== 'agent') {
+    return res.status(400).json({ error: 'sender должен быть "client" или "agent"' });
+  }
+
   try {
+    // Insert the user's message
     const [result] = await pool.query(
       'INSERT INTO messages (client_id, message, sender, is_read) VALUES (?, ?, ?, ?)',
       [client_id, message, sender, sender === 'agent' ? true : false]
     );
     const [newMessage] = await pool.query('SELECT * FROM messages WHERE id = ?', [result.insertId]);
-    res.json(newMessage[0]);
+
+    // Send an auto-reply
+    const autoReply = {
+      client_id,
+      message: 'Ваше сообщение получено! Мы ответим в ближайшее время.',
+      sender: 'agent',
+      is_read: true
+    };
+    await pool.query(
+      'INSERT INTO messages (client_id, message, sender, is_read) VALUES (?, ?, ?, ?)',
+      [autoReply.client_id, autoReply.message, autoReply.sender, autoReply.is_read]
+    );
+
+    res.json({
+      message: newMessage[0],
+      clientId: client_id // Return clientId for anonymous users
+    });
   } catch (err) {
-    console.error('Ошибка отправки сообщения:', err);
+    console.error('Ошибка отправки сообщения:', {
+      message: err.message,
+      sql: err.sql,
+      code: err.code,
+      errno: err.errno
+    });
     res.status(500).json({ error: 'Ошибка сервера' });
   }
 });
