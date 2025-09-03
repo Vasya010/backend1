@@ -229,6 +229,9 @@ async function testDatabaseConnection() {
       }
     }
 
+
+    
+
 const [supplierTables] = await connection.execute("SHOW TABLES LIKE 'suppliers'");
 if (supplierTables.length === 0) {
   console.log("Creating suppliers table...");
@@ -276,6 +279,28 @@ if (supplierTables.length === 0) {
       `);
     }
 
+// Create sales table
+    const [salesTables] = await connection.execute("SHOW TABLES LIKE 'sales'");
+    if (salesTables.length === 0) {
+      console.log("Creating sales table...");
+      await connection.execute(`
+        CREATE TABLE sales (
+          id INT AUTO_INCREMENT PRIMARY KEY,
+          supplier_id INT NOT NULL,
+          property_id INT NOT NULL,
+          amount DECIMAL(15, 2) NOT NULL,
+          date DATE NOT NULL,
+          status ENUM('Подтверждена', 'В обработке', 'Отменена') NOT NULL,
+          documents JSON,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          FOREIGN KEY (supplier_id) REFERENCES suppliers(id) ON DELETE CASCADE,
+          FOREIGN KEY (property_id) REFERENCES properties(id) ON DELETE CASCADE
+        ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+      `);
+    }
+
+    
     // Create subdistricts table
     const [subdistrictTables] = await connection.execute("SHOW TABLES LIKE 'subdistricts'");
     if (subdistrictTables.length === 0) {
