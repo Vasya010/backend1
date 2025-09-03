@@ -2280,6 +2280,9 @@ app.get('/api/clients', authenticate, async (req, res) => {
 // Эндпоинты для сообщений
 app.get('/api/messages/:clientId', authenticate, async (req, res) => {
   const { clientId } = req.params;
+  if (!Number.isInteger(Number(clientId)) || Number(clientId) < 0) {
+    return res.status(400).json({ error: 'clientId должен быть положительным целым числом' });
+  }
   try {
     const [messages] = await pool.query('SELECT * FROM messages WHERE client_id = ? ORDER BY timestamp ASC', [clientId]);
     res.json(messages);
@@ -2294,9 +2297,12 @@ app.post('/api/messages', authenticate, async (req, res) => {
   if (!client_id || !message || !sender) {
     return res.status(400).json({ error: 'Клиент, сообщение и отправитель обязательны' });
   }
+  if (!Number.isInteger(client_id) || client_id < 0) {
+    return res.status(400).json({ error: 'client_id должен быть положительным целым числом' });
+  }
   try {
     const [result] = await pool.query(
-      'INSERT INTO messages (client_id, message, sender, read) VALUES (?, ?, ?, ?)',
+      'INSERT INTO messages (client_id, message, sender, is_read) VALUES (?, ?, ?, ?)',
       [client_id, message, sender, sender === 'agent' ? true : false]
     );
     const [newMessage] = await pool.query('SELECT * FROM messages WHERE id = ?', [result.insertId]);
