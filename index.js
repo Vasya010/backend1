@@ -787,6 +787,283 @@ app.post("/api/users", authenticate, upload.single("photo"), async (req, res) =>
   }
 });
 
+
+
+/**
+ * Получить продажи (защищено, SUPER_ADMIN или REALTOR)
+ * GET /api/sales
+ */
+app.get("/api/sales", authenticate, async (req, res) => {
+  if (!["SUPER_ADMIN", "REALTOR"].includes(req.user.role)) {
+    return res.status(403).json({ error: "Доступ запрещён: требуется роль SUPER_ADMIN или REALTOR" });
+  }
+  let connection;
+  try {
+    connection = await pool.getConnection();
+    const [rows] = await connection.execute(
+      `SELECT s.id, s.supplier_id, s.property_id, s.amount, s.date, s.status, s.documents, 
+              sup.name AS supplier_name, p.title AS property_title 
+       FROM sales s 
+       LEFT JOIN suppliers sup ON s.supplier_id = sup.id 
+       LEFT JOIN properties p ON s.property_id = p.id`
+    );
+    const sales = rows.map(row => {
+      let parsedDocuments = [];
+      try {
+        parsedDocuments = row.documents ? JSON.parse(row.documents) : [];
+      } catch (error) {
+        console.warn(`Ошибка парсинга documents для продажи ID ${row.id}:`, error.message);
+      }
+      return {
+        ...row,
+        documents: parsedDocuments.map(doc => `https://s3.twcstorage.ru/${bucketName}/${doc}`),
+      };
+    });
+    res.json(sales);
+  } catch (error) {
+    console.error("Ошибка при получении продаж:", { message: error.message, stack: error.stack });
+    res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
+/**
+ * Создать новую продажу (защищено, SUPER_ADMIN или REALTOR)
+ * POST /api/sales
+ * FormData: supplier_id, property_id, amount, date, status, documents (файлы)
+ */
+app.post("/api/sales", authenticate, upload.array("documents", 10), async (req, res) => {
+  if (!["SUPER_ADMIN", "REALTOR"].includes(req.user.role)) {
+    return res.status(403).json({ error: "Доступ запрещён: требуется роль SUPER_ADMIN или REALTOR" });
+  }
+  const { supplier_id, property_id, amount, date, status } = req.body;
+  const documents = req.files
+    ? req.files.map(file => ({
+        filename: `${Date.now()}-${Math.round(Math.random() * 1e9)}${path.extname(file.originalname)}`,
+        buffer: file.buffer,
+        mimetype: file.mimetype,
+      }))
+    : [];
+
+  if (!supplier_id || !property_id || !amount || !date || !status) {
+    return res.status(400).json({ error: "Все обязательные поля (supplier_id, property_id, amount, date, status) должны быть заполнены" });
+  }
+  if (!["Подтверждена", "В обработке", "Отменена"].includes(status)) {
+    return res.status(400).json({ error: "Недействительный статус. Должен быть: Подтверждена, В обработке, Отменена" });
+  }
+
+  let connection;
+  try {
+    connection = await pool.getConnection();
+    const [supplierCheck] = await connection.execute("SELECT id FROM suppliers WHERE id = ?", [supplier_id]);
+    if (supplierCheck.length === 0) {
+      return res.status(400).json({ error: "Поставщик не найден" });
+    }
+    const [propertyCheck] = await connection.execute("SELECT id FROM properties WHERE id = ?", [property_id]);
+    if (propertyCheck.length === 0) {
+      return res.status(400).json({ error: "Недвижимость не найдена" });
+    }
+
+    for (const doc of documents) {
+      await s3Client.send(
+        new PutObjectCommand({
+          Bucket: bucketName,
+          Key: doc.filename,
+          Body: doc.buffer,
+          ContentType: doc.mimetype,
+        })
+      );
+    }
+
+    const documentsJson = documents.length > 0 ? JSON.stringify(documents.map(doc => doc.filename)) : null;
+
+    const [result] = await connection.execute(
+      "INSERT INTO sales (supplier_id, property_id, amount, date, status, documents) VALUES (?, ?, ?, ?, ?, ?)",
+      [supplier_id, property_id, amount, date, status, documentsJson]
+    );
+
+    const [newSale] = await connection.execute(
+      `SELECT s.id, s.supplier_id, s.property_id, s.amount, s.date, s.status, s.documents, 
+              sup.name AS supplier_name, p.title AS property_title 
+       FROM sales s 
+       LEFT JOIN suppliers sup ON s.supplier_id = sup.id 
+       LEFT JOIN properties p ON s.property_id = p.id 
+       WHERE s.id = ?`,
+      [result.insertId]
+    );
+
+    const sale = {
+      ...newSale[0],
+      documents: documentsJson ? JSON.parse(documentsJson).map(doc => `https://s3.twcstorage.ru/${bucketName}/${doc}`) : [],
+    };
+
+    res.json(sale);
+  } catch (error) {
+    console.error("Ошибка при создании продажи:", { message: error.message, stack: error.stack });
+    res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
+/**
+ * Обновить продажу (защищено, SUPER_ADMIN или REALTOR)
+ * PUT /api/sales/:id
+ * FormData: supplier_id, property_id, amount, date, status, documents (файлы), existingDocuments
+ */
+app.put("/api/sales/:id", authenticate, upload.array("documents", 10), async (req, res) => {
+  if (!["SUPER_ADMIN", "REALTOR"].includes(req.user.role)) {
+    return res.status(403).json({ error: "Доступ запрещён: требуется роль SUPER_ADMIN или REALTOR" });
+  }
+  const { id } = req.params;
+  const { supplier_id, property_id, amount, date, status, existingDocuments } = req.body;
+  const documents = req.files
+    ? req.files.map(file => ({
+        filename: `${Date.now()}-${Math.round(Math.random() * 1e9)}${path.extname(file.originalname)}`,
+        buffer: file.buffer,
+        mimetype: file.mimetype,
+      }))
+    : [];
+
+  if (!supplier_id || !property_id || !amount || !date || !status) {
+    return res.status(400).json({ error: "Все обязательные поля (supplier_id, property_id, amount, date, status) должны быть заполнены" });
+  }
+  if (!["Подтверждена", "В обработке", "Отменена"].includes(status)) {
+    return res.status(400).json({ error: "Недействительный статус. Должен быть: Подтверждена, В обработке, Отменена" });
+  }
+
+  let connection;
+  try {
+    connection = await pool.getConnection();
+    const [saleCheck] = await connection.execute("SELECT documents FROM sales WHERE id = ?", [id]);
+    if (saleCheck.length === 0) {
+      return res.status(404).json({ error: "Продажа не найдена" });
+    }
+    const [supplierCheck] = await connection.execute("SELECT id FROM suppliers WHERE id = ?", [supplier_id]);
+    if (supplierCheck.length === 0) {
+      return res.status(400).json({ error: "Поставщик не найден" });
+    }
+    const [propertyCheck] = await connection.execute("SELECT id FROM properties WHERE id = ?", [property_id]);
+    if (propertyCheck.length === 0) {
+      return res.status(400).json({ error: "Недвижимость не найдена" });
+    }
+
+    let existingDocs = [];
+    try {
+      existingDocs = saleCheck[0].documents ? JSON.parse(saleCheck[0].documents) : [];
+    } catch (error) {
+      console.warn(`Ошибка парсинга документов для продажи ID ${id}:`, error.message);
+    }
+
+    let existingDocsList = [];
+    if (existingDocuments) {
+      try {
+        existingDocsList = JSON.parse(existingDocuments) || [];
+        if (!Array.isArray(existingDocsList) || !existingDocsList.every(doc => typeof doc === "string" && doc.trim() && existingDocs.includes(doc))) {
+          return res.status(400).json({ error: "Недействительный формат existingDocuments: должен быть массивом имен файлов документов" });
+        }
+      } catch (error) {
+        console.error(`Ошибка парсинга existingDocuments для продажи ID ${id}:`, error.message);
+        return res.status(400).json({ error: "Недействительный формат existingDocuments" });
+      }
+    } else {
+      existingDocsList = existingDocs;
+    }
+
+    for (const doc of documents) {
+      await s3Client.send(
+        new PutObjectCommand({
+          Bucket: bucketName,
+          Key: doc.filename,
+          Body: doc.buffer,
+          ContentType: doc.mimetype,
+        })
+      );
+    }
+
+    const docsToDelete = existingDocs.filter(doc => !existingDocsList.includes(doc));
+    for (const oldDoc of docsToDelete) {
+      try {
+        await s3Client.send(new DeleteObjectCommand({ Bucket: bucketName, Key: oldDoc }));
+      } catch (error) {
+        console.warn(`Не удалось удалить старый документ из S3: ${oldDoc}`, error.message);
+      }
+    }
+
+    const newDocuments = [...existingDocsList, ...documents.map(doc => doc.filename)];
+    const documentsJson = newDocuments.length > 0 ? JSON.stringify(newDocuments) : null;
+
+    await connection.execute(
+      "UPDATE sales SET supplier_id = ?, property_id = ?, amount = ?, date = ?, status = ?, documents = ? WHERE id = ?",
+      [supplier_id, property_id, amount, date, status, documentsJson, id]
+    );
+
+    const [updatedSale] = await connection.execute(
+      `SELECT s.id, s.supplier_id, s.property_id, s.amount, s.date, s.status, s.documents, 
+              sup.name AS supplier_name, p.title AS property_title 
+       FROM sales s 
+       LEFT JOIN suppliers sup ON s.supplier_id = sup.id 
+       LEFT JOIN properties p ON s.property_id = p.id 
+       WHERE s.id = ?`,
+      [id]
+    );
+
+    const sale = {
+      ...updatedSale[0],
+      documents: documentsJson ? JSON.parse(documentsJson).map(doc => `https://s3.twcstorage.ru/${bucketName}/${doc}`) : [],
+    };
+
+    res.json(sale);
+  } catch (error) {
+    console.error("Ошибка при обновлении продажи:", { message: error.message, stack: error.stack });
+    res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
+/**
+ * Удалить продажу (защищено, SUPER_ADMIN или REALTOR)
+ * DELETE /api/sales/:id
+ */
+app.delete("/api/sales/:id", authenticate, async (req, res) => {
+  if (!["SUPER_ADMIN", "REALTOR"].includes(req.user.role)) {
+    return res.status(403).json({ error: "Доступ запрещён: требуется роль SUPER_ADMIN или REALTOR" });
+  }
+  const { id } = req.params;
+  let connection;
+  try {
+    connection = await pool.getConnection();
+    const [sales] = await connection.execute("SELECT documents FROM sales WHERE id = ?", [id]);
+    if (sales.length === 0) {
+      return res.status(404).json({ error: "Продажа не найдена" });
+    }
+
+    let documents = [];
+    try {
+      documents = sales[0].documents ? JSON.parse(sales[0].documents) : [];
+    } catch (error) {
+      console.warn(`Ошибка парсинга документов для продажи ID ${id}:`, error.message);
+    }
+
+    for (const doc of documents) {
+      try {
+        await s3Client.send(new DeleteObjectCommand({ Bucket: bucketName, Key: doc }));
+      } catch (error) {
+        console.warn(`Не удалось удалить документ из S3: ${doc}`, error.message);
+      }
+    }
+
+    await connection.execute("DELETE FROM sales WHERE id = ?", [id]);
+    res.json({ message: "Продажа успешно удалена" });
+  } catch (error) {
+    console.error("Ошибка при удалении продажи:", { message: error.message, stack: error.stack });
+    res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
+  }
+});
 // Update User (Protected, SUPER_ADMIN only)
 app.put("/api/users/:id", authenticate, upload.single("photo"), async (req, res) => {
   if (req.user.role !== "SUPER_ADMIN") {
