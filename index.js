@@ -2117,26 +2117,35 @@ app.delete('/api/suppliers/:id', authenticate, async (req, res) => {
 // Эндпоинты для продаж
 app.get('/api/sales', authenticate, async (req, res) => {
   try {
-    // Проверяем существование таблиц
-    const [tables] = await pool.query(`
-      SELECT TABLE_NAME 
-      FROM information_schema.TABLES 
-      WHERE TABLE_SCHEMA = ? AND TABLE_NAME IN ('sales', 'suppliers', 'properties')
-    `, [process.env.DB_NAME]);
-    if (tables.length !== 3) {
-      return res.status(500).json({ error: 'Одна или несколько таблиц (sales, suppliers, properties) отсутствуют' });
+    // Проверка наличия таблиц
+    const [tables] = await pool.query('SHOW TABLES LIKE "sales"');
+    if (!tables.length) {
+      throw new Error('Таблица sales не найдена');
+    }
+    const [suppliersTable] = await pool.query('SHOW TABLES LIKE "suppliers"');
+    if (!suppliersTable.length) {
+      throw new Error('Таблица suppliers не найдена');
+    }
+    const [propertiesTable] = await pool.query('SHOW TABLES LIKE "properties"');
+    if (!propertiesTable.length) {
+      throw new Error('Таблица properties не найдена');
     }
 
     const [sales] = await pool.query(`
       SELECT s.*, sup.name AS supplier_name, p.title AS property_title
       FROM sales s
-      LEFT JOIN suppliers sup ON s.supplier_id = sup.id
-      LEFT JOIN properties p ON s.property_id = p.id
+      JOIN suppliers sup ON s.supplier_id = sup.id
+      JOIN properties p ON s.property_id = p.id
     `);
     res.json(sales);
   } catch (err) {
-    console.error('Ошибка получения продаж:', err);
-    res.status(500).json({ error: `Ошибка сервера: ${err.message}` });
+    console.error('Ошибка получения продаж:', {
+      message: err.message,
+      stack: err.stack,
+      sqlMessage: err.sqlMessage,
+      sqlState: err.sqlState,
+    });
+    res.status(500).json({ error: 'Ошибка сервера', details: err.message });
   }
 });
 
