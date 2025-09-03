@@ -201,7 +201,7 @@ async function testDatabaseConnection() {
         ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
       `);
     } else {
-      // Check and add owner_phone column if not exists
+      // Check and add owner_phone column if not exists8578
       const [ownerPhoneColumns] = await connection.execute(
         "SHOW COLUMNS FROM properties LIKE 'owner_phone'"
       );
@@ -262,6 +262,7 @@ if (supplierTables.length === 0) {
       `);
     }
 
+    
     // Create districts table
     const [districtTables] = await connection.execute("SHOW TABLES LIKE 'districts'");
     if (districtTables.length === 0) {
