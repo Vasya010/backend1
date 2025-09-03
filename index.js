@@ -2116,23 +2116,18 @@ app.delete('/api/suppliers/:id', authenticate, async (req, res) => {
 
 // Эндпоинты для продаж
 app.get('/api/sales', authenticate, async (req, res) => {
+  let connection;
   try {
-    // Проверка наличия таблиц
-    const [tables] = await pool.query('SHOW TABLES LIKE "sales"');
-    if (!tables.length) {
-      throw new Error('Таблица sales не найдена');
-    }
-    const [suppliersTable] = await pool.query('SHOW TABLES LIKE "suppliers"');
-    if (!suppliersTable.length) {
-      throw new Error('Таблица suppliers не найдена');
-    }
-    const [propertiesTable] = await pool.query('SHOW TABLES LIKE "properties"');
-    if (!propertiesTable.length) {
-      throw new Error('Таблица properties не найдена');
-    }
+    connection = await pool.getConnection();
+    const [tables] = await connection.query('SHOW TABLES LIKE "sales"');
+    if (!tables.length) throw new Error('Таблица sales не найдена');
+    const [suppliersTable] = await connection.query('SHOW TABLES LIKE "suppliers"');
+    if (!suppliersTable.length) throw new Error('Таблица suppliers не найдена');
+    const [propertiesTable] = await connection.query('SHOW TABLES LIKE "properties"');
+    if (!propertiesTable.length) throw new Error('Таблица properties не найдена');
 
-    const [sales] = await pool.query(`
-      SELECT s.*, sup.name AS supplier_name, p.title AS property_title
+    const [sales] = await connection.query(`
+      SELECT s.*, sup.name AS supplier_name, p.address AS property_address
       FROM sales s
       JOIN suppliers sup ON s.supplier_id = sup.id
       JOIN properties p ON s.property_id = p.id
@@ -2146,6 +2141,33 @@ app.get('/api/sales', authenticate, async (req, res) => {
       sqlState: err.sqlState,
     });
     res.status(500).json({ error: 'Ошибка сервера', details: err.message });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
+// app.js
+app.get('/api/news', authenticate, async (req, res) => {
+  let connection;
+  try {
+    connection = await pool.getConnection();
+    const [tables] = await connection.execute("SHOW TABLES LIKE 'news'");
+    if (!tables.length) {
+      console.warn("Таблица news не найдена");
+      return res.status(200).json([]);
+    }
+    const [news] = await connection.execute('SELECT id, title, content, published_at FROM news ORDER BY published_at DESC');
+    res.json(news);
+  } catch (err) {
+    console.error('Ошибка получения новостей:', {
+      message: err.message,
+      stack: err.stack,
+      sqlMessage: err.sqlMessage,
+      sqlState: err.sqlState,
+    });
+    res.status(500).json({ error: 'Ошибка сервера', details: err.message });
+  } finally {
+    if (connection) connection.release();
   }
 });
 
