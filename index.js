@@ -2311,34 +2311,39 @@ app.post('/api/messages', async (req, res) => {
     return res.status(400).json({ error: 'Отправитель должен быть "client" или "agent"' });
   }
 
+  const connection = await pool.getConnection();
   try {
+    await connection.beginTransaction();
+
     // Если client_id не предоставлен, создаём нового клиента
     if (!client_id) {
-      const [clientResult] = await pool.query('INSERT INTO clients (created_at) VALUES (NOW())');
+      const [clientResult] = await connection.query('INSERT INTO clients (created_at) VALUES (NOW())');
       client_id = clientResult.insertId;
-      console.log('Создан новый клиент с client_id:', client_id);
+      console.log('Сгенерирован новый client_id:', client_id);
     } else {
-      // Проверяем, существует ли client_id в таблице clients
-      const [client] = await pool.query('SELECT id FROM clients WHERE id = ?', [client_id]);
+      // Проверяем, существует ли client_id
+      const [client] = await connection.query('SELECT id FROM clients WHERE id = ?', [client_id]);
       if (!client.length) {
+        await connection.rollback();
         return res.status(400).json({ error: 'Указанный client_id не существует' });
       }
     }
 
-    // Проверка client_id на корректность
-    if (!Number.isInteger(client_id) || client_id < 0 || client_id > 4294967295) {
+    // Проверка client_id на корректность (UNSIGNED INT)
+    if (!Number.isInteger(Number(client_id)) || client_id < 0 || client_id > 4294967295) {
+      await connection.rollback();
       return res.status(400).json({ error: 'client_id должен быть положительным целым числом (UNSIGNED INT)' });
     }
 
-    // Вставка сообщения пользователя
-    const [result] = await pool.query(
-      'INSERT INTO messages (client_id, message, sender, is_read) VALUES (?, ?, ?, ?)',
+    // Вставка сообщения
+    const [result] = await connection.query(
+      'INSERT INTO messages (client_id, message, sender, is_read, timestamp) VALUES (?, ?, ?, ?, NOW())',
       [client_id, message, sender, sender === 'agent' ? 1 : 0]
     );
     console.log('Сообщение сохранено, ID:', result.insertId);
 
     // Получение сохранённого сообщения
-    const [newMessage] = await pool.query('SELECT * FROM messages WHERE id = ?', [result.insertId]);
+    const [newMessage] = await connection.query('SELECT * FROM messages WHERE id = ?', [result.insertId]);
     if (!newMessage[0]) {
       throw new Error('Не удалось получить новое сообщение');
     }
@@ -2350,18 +2355,19 @@ app.post('/api/messages', async (req, res) => {
       sender: 'agent',
       is_read: 1
     };
-    await pool.query(
-      'INSERT INTO messages (client_id, message, sender, is_read) VALUES (?, ?, ?, ?)',
+    await connection.query(
+      'INSERT INTO messages (client_id, message, sender, is_read, timestamp) VALUES (?, ?, ?, ?, NOW())',
       [autoReply.client_id, autoReply.message, autoReply.sender, autoReply.is_read]
     );
     console.log('Автоответ успешно отправлен');
 
-    // Ответ клиенту
+    await connection.commit();
     res.json({
       message: newMessage[0],
       clientId: client_id
     });
   } catch (err) {
+    await connection.rollback();
     console.error('Ошибка отправки сообщения:', {
       message: err.message,
       sql: err.sql,
@@ -2370,6 +2376,8 @@ app.post('/api/messages', async (req, res) => {
       stack: err.stack
     });
     res.status(500).json({ error: 'Ошибка сервера при обработке сообщения' });
+  } finally {
+    connection.release();
   }
 });
 
