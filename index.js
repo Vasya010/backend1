@@ -2310,14 +2310,26 @@ app.post('/api/messages', async (req, res) => {
   if (!sender || (sender !== 'client' && sender !== 'agent')) {
     return res.status(400).json({ error: 'Отправитель должен быть "client" или "agent"' });
   }
-  if (!client_id) {
-    client_id = Math.floor(Math.random() * 1000000) + 1;
-    console.log('Сгенерирован новый client_id:', client_id);
-  } else if (!Number.isInteger(client_id) || client_id < 0 || client_id > 4294967295) {
-    return res.status(400).json({ error: 'client_id должен быть положительным целым числом (UNSIGNED INT)' });
-  }
 
   try {
+    // Если client_id не предоставлен, создаём нового клиента
+    if (!client_id) {
+      const [clientResult] = await pool.query('INSERT INTO clients (created_at) VALUES (NOW())');
+      client_id = clientResult.insertId;
+      console.log('Создан новый клиент с client_id:', client_id);
+    } else {
+      // Проверяем, существует ли client_id в таблице clients
+      const [client] = await pool.query('SELECT id FROM clients WHERE id = ?', [client_id]);
+      if (!client.length) {
+        return res.status(400).json({ error: 'Указанный client_id не существует' });
+      }
+    }
+
+    // Проверка client_id на корректность
+    if (!Number.isInteger(client_id) || client_id < 0 || client_id > 4294967295) {
+      return res.status(400).json({ error: 'client_id должен быть положительным целым числом (UNSIGNED INT)' });
+    }
+
     // Вставка сообщения пользователя
     const [result] = await pool.query(
       'INSERT INTO messages (client_id, message, sender, is_read) VALUES (?, ?, ?, ?)',
