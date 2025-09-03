@@ -2117,16 +2117,26 @@ app.delete('/api/suppliers/:id', authenticate, async (req, res) => {
 // Эндпоинты для продаж
 app.get('/api/sales', authenticate, async (req, res) => {
   try {
+    // Проверяем существование таблиц
+    const [tables] = await pool.query(`
+      SELECT TABLE_NAME 
+      FROM information_schema.TABLES 
+      WHERE TABLE_SCHEMA = ? AND TABLE_NAME IN ('sales', 'suppliers', 'properties')
+    `, [process.env.DB_NAME]);
+    if (tables.length !== 3) {
+      return res.status(500).json({ error: 'Одна или несколько таблиц (sales, suppliers, properties) отсутствуют' });
+    }
+
     const [sales] = await pool.query(`
       SELECT s.*, sup.name AS supplier_name, p.title AS property_title
       FROM sales s
-      JOIN suppliers sup ON s.supplier_id = sup.id
-      JOIN properties p ON s.property_id = p.id
+      LEFT JOIN suppliers sup ON s.supplier_id = sup.id
+      LEFT JOIN properties p ON s.property_id = p.id
     `);
     res.json(sales);
   } catch (err) {
     console.error('Ошибка получения продаж:', err);
-    res.status(500).json({ error: 'Ошибка сервера' });
+    res.status(500).json({ error: `Ошибка сервера: ${err.message}` });
   }
 });
 
