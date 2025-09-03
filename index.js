@@ -229,6 +229,24 @@ async function testDatabaseConnection() {
       }
     }
 
+const [supplierTables] = await connection.execute("SHOW TABLES LIKE 'suppliers'");
+if (supplierTables.length === 0) {
+  console.log("Creating suppliers table...");
+  await connection.execute(`
+    CREATE TABLE suppliers (
+      id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+      name VARCHAR(255) NOT NULL,
+      contact VARCHAR(255) NOT NULL,
+      service_type VARCHAR(255) NOT NULL,
+      status VARCHAR(50) NOT NULL,
+      address TEXT DEFAULT NULL,
+      documents TEXT DEFAULT NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+  `);
+}
+
     // Create jk table
     const [jkTables] = await connection.execute("SHOW TABLES LIKE 'jk'");
     if (jkTables.length === 0) {
@@ -409,6 +427,287 @@ app.get("/api/users", authenticate, async (req, res) => {
     console.error("Error retrieving users:", {
       message: error.message,
       stack: error.stack
+    });
+    res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
+
+/**
+ * Получить всех поставщиков (защищено, SUPER_ADMIN или REALTOR)
+ * GET /api/suppliers
+ */
+app.get("/api/suppliers", authenticate, async (req, res) => {
+  if (!["SUPER_ADMIN", "REALTOR"].includes(req.user.role)) {
+    return res.status(403).json({ error: "Доступ запрещён: требуется роль SUPER_ADMIN или REALTOR" });
+  }
+  let connection;
+  try {
+    connection = await pool.getConnection();
+    const [rows] = await connection.execute(
+      "SELECT id, name, contact, service_type, status, address, documents FROM suppliers"
+    );
+    const suppliers = rows.map(row => {
+      let parsedDocuments = [];
+      try {
+        parsedDocuments = row.documents ? JSON.parse(row.documents) : [];
+      } catch (error) {
+        console.warn(`Ошибка парсинга documents для ID ${row.id}:`, error.message);
+        parsedDocuments = [];
+      }
+      return {
+        ...row,
+        documents: parsedDocuments.map(doc => `https://s3.twcstorage.ru/${bucketName}/${doc}`),
+      };
+    });
+    res.json(suppliers);
+  } catch (error) {
+    console.error("Ошибка при получении поставщиков:", {
+      message: error.message,
+      stack: error.stack,
+    });
+    res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
+/**
+ * Создать нового поставщика (защищено, SUPER_ADMIN или REALTOR)
+ * POST /api/suppliers
+ * FormData: name, contact, service_type, status, address, documents (файлы)
+ */
+app.post("/api/suppliers", authenticate, upload.array("documents", 10), async (req, res) => {
+  if (!["SUPER_ADMIN", "REALTOR"].includes(req.user.role)) {
+    return res.status(403).json({ error: "Доступ запрещён: требуется роль SUPER_ADMIN или REALTOR" });
+  }
+  const { name, contact, service_type, status, address } = req.body;
+  const documents = req.files
+    ? req.files.map(file => ({
+        filename: `${Date.now()}-${Math.round(Math.random() * 1e9)}${path.extname(file.originalname)}`,
+        buffer: file.buffer,
+        mimetype: file.mimetype,
+      }))
+    : [];
+
+  if (!name || !contact || !service_type || !status) {
+    return res.status(400).json({ error: "Все обязательные поля (name, contact, service_type, status) должны быть заполнены" });
+  }
+  if (!["Активен", "Неактивен"].includes(status)) {
+    return res.status(400).json({ error: "Недействительный статус. Должен быть: Активен или Неактивен" });
+  }
+
+  let connection;
+  try {
+    connection = await pool.getConnection();
+    const [existingSupplier] = await connection.execute("SELECT id FROM suppliers WHERE name = ?", [name]);
+    if (existingSupplier.length > 0) {
+      return res.status(400).json({ error: "Поставщик с таким названием уже существует" });
+    }
+
+    for (const doc of documents) {
+      try {
+        await s3Client.send(
+          new PutObjectCommand({
+            Bucket: bucketName,
+            Key: doc.filename,
+            Body: doc.buffer,
+            ContentType: doc.mimetype,
+          })
+        );
+      } catch (error) {
+        console.error(`Не удалось загрузить документ в S3: ${doc.filename}`, error.message);
+        throw new Error(`Не удалось загрузить документ: ${doc.filename}`);
+      }
+    }
+
+    const documentsJson = documents.length > 0 ? JSON.stringify(documents.map(doc => doc.filename)) : null;
+
+    const [result] = await connection.execute(
+      "INSERT INTO suppliers (name, contact, service_type, status, address, documents) VALUES (?, ?, ?, ?, ?, ?)",
+      [name, contact, service_type, status, address || null, documentsJson]
+    );
+
+    const newSupplier = {
+      id: result.insertId,
+      name,
+      contact,
+      service_type,
+      status,
+      address,
+      documents: documents.map(doc => `https://s3.twcstorage.ru/${bucketName}/${doc.filename}`),
+    };
+
+    res.json(newSupplier);
+  } catch (error) {
+    console.error("Ошибка при создании поставщика:", {
+      message: error.message,
+      stack: error.stack,
+    });
+    res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
+/**
+ * Обновить поставщика (защищено, SUPER_ADMIN или REALTOR)
+ * PUT /api/suppliers/:id
+ * FormData: name, contact, service_type, status, address, documents (файлы), existingDocuments
+ */
+app.put("/api/suppliers/:id", authenticate, upload.array("documents", 10), async (req, res) => {
+  if (!["SUPER_ADMIN", "REALTOR"].includes(req.user.role)) {
+    return res.status(403).json({ error: "Доступ запрещён: требуется роль SUPER_ADMIN или REALTOR" });
+  }
+  const { id } = req.params;
+  const { name, contact, service_type, status, address, existingDocuments } = req.body;
+  const documents = req.files
+    ? req.files.map(file => ({
+        filename: `${Date.now()}-${Math.round(Math.random() * 1e9)}${path.extname(file.originalname)}`,
+        buffer: file.buffer,
+        mimetype: file.mimetype,
+      }))
+    : [];
+
+  if (!name || !contact || !service_type || !status) {
+    return res.status(400).json({ error: "Все обязательные поля (name, contact, service_type, status) должны быть заполнены" });
+  }
+  if (!["Активен", "Неактивен"].includes(status)) {
+    return res.status(400).json({ error: "Недействительный статус. Должен быть: Активен или Неактивен" });
+  }
+
+  let connection;
+  try {
+    connection = await pool.getConnection();
+    const [existingSuppliers] = await connection.execute("SELECT documents FROM suppliers WHERE id = ?", [id]);
+    if (existingSuppliers.length === 0) {
+      return res.status(404).json({ error: "Поставщик не найден" });
+    }
+
+    const [nameCheck] = await connection.execute("SELECT id FROM suppliers WHERE name = ? AND id != ?", [name, id]);
+    if (nameCheck.length > 0) {
+      return res.status(400).json({ error: "Поставщик с таким названием уже существует" });
+    }
+
+    let existingDocs = [];
+    try {
+      existingDocs = existingSuppliers[0].documents ? JSON.parse(existingSuppliers[0].documents) : [];
+    } catch (error) {
+      console.warn(`Ошибка парсинга документов для ID ${id}:`, error.message);
+      existingDocs = [];
+    }
+
+    let existingDocsList = [];
+    if (existingDocuments) {
+      try {
+        existingDocsList = JSON.parse(existingDocuments) || [];
+        if (!Array.isArray(existingDocsList) || !existingDocsList.every(doc => typeof doc === "string" && doc.trim() && existingDocs.includes(doc))) {
+          return res.status(400).json({ error: "Недействительный формат existingDocuments: должен быть массивом имен файлов документов" });
+        }
+      } catch (error) {
+        console.error(`Ошибка парсинга existingDocuments для ID ${id}:`, error.message);
+        return res.status(400).json({ error: "Недействительный формат existingDocuments" });
+      }
+    } else {
+      existingDocsList = existingDocs;
+    }
+
+    for (const doc of documents) {
+      try {
+        await s3Client.send(
+          new PutObjectCommand({
+            Bucket: bucketName,
+            Key: doc.filename,
+            Body: doc.buffer,
+            ContentType: doc.mimetype,
+          })
+        );
+      } catch (error) {
+        console.error(`Не удалось загрузить документ в S3: ${doc.filename}`, error.message);
+        throw new Error(`Не удалось загрузить документ: ${doc.filename}`);
+      }
+    }
+
+    const docsToDelete = existingDocs.filter(doc => !existingDocsList.includes(doc));
+    for (const oldDoc of docsToDelete) {
+      try {
+        await s3Client.send(new DeleteObjectCommand({ Bucket: bucketName, Key: oldDoc }));
+      } catch (error) {
+        console.warn(`Не удалось удалить старый документ из S3: ${oldDoc}`, error.message);
+      }
+    }
+
+    const newDocuments = [...existingDocsList, ...documents.map(doc => doc.filename)];
+    const documentsJson = newDocuments.length > 0 ? JSON.stringify(newDocuments) : null;
+
+    await connection.execute(
+      "UPDATE suppliers SET name = ?, contact = ?, service_type = ?, status = ?, address = ?, documents = ? WHERE id = ?",
+      [name, contact, service_type, status, address || null, documentsJson, id]
+    );
+
+    const updatedSupplier = {
+      id: parseInt(id),
+      name,
+      contact,
+      service_type,
+      status,
+      address,
+      documents: newDocuments.map(doc => `https://s3.twcstorage.ru/${bucketName}/${doc}`),
+    };
+
+    res.json(updatedSupplier);
+  } catch (error) {
+    console.error("Ошибка при обновлении поставщика:", {
+      message: error.message,
+      stack: error.stack,
+    });
+    res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
+/**
+ * Удалить поставщика (защищено, SUPER_ADMIN или REALTOR)
+ * DELETE /api/suppliers/:id
+ */
+app.delete("/api/suppliers/:id", authenticate, async (req, res) => {
+  if (!["SUPER_ADMIN", "REALTOR"].includes(req.user.role)) {
+    return res.status(403).json({ error: "Доступ запрещён: требуется роль SUPER_ADMIN или REALTOR" });
+  }
+  const { id } = req.params;
+  let connection;
+  try {
+    connection = await pool.getConnection();
+    const [suppliers] = await connection.execute("SELECT documents FROM suppliers WHERE id = ?", [id]);
+    if (suppliers.length === 0) {
+      return res.status(404).json({ error: "Поставщик не найден" });
+    }
+
+    let documents = [];
+    try {
+      documents = suppliers[0].documents ? JSON.parse(suppliers[0].documents) : [];
+    } catch (error) {
+      console.warn(`Ошибка парсинга документов для ID ${id}:`, error.message);
+      documents = [];
+    }
+
+    for (const doc of documents) {
+      try {
+        await s3Client.send(new DeleteObjectCommand({ Bucket: bucketName, Key: doc }));
+      } catch (error) {
+        console.warn(`Не удалось удалить документ из S3: ${doc}`, error.message);
+      }
+    }
+
+    await connection.execute("DELETE FROM suppliers WHERE id = ?", [id]);
+    res.json({ message: "Поставщик успешно удалён" });
+  } catch (error) {
+    console.error("Ошибка при удалении поставщика:", {
+      message: error.message,
+      stack: error.stack,
     });
     res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
   } finally {
