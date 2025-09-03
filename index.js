@@ -2019,6 +2019,318 @@ app.get("/public/properties/curator-phone", async (req, res) => {
 });
 
 
+
+
+
+// Эндпоинты для поставщиков
+app.get('/api/suppliers', authenticate, async (req, res) => {
+  try {
+    const [suppliers] = await pool.query('SELECT * FROM suppliers');
+    res.json(suppliers);
+  } catch (err) {
+    console.error('Ошибка получения поставщиков:', err);
+    res.status(500).json({ error: 'Ошибка сервера' });
+  }
+});
+
+app.post('/api/suppliers', authenticate, upload.array('documents'), async (req, res) => {
+  const { name, contact, status, serviceType, address } = req.body;
+  if (!name || !contact || !serviceType) {
+    return res.status(400).json({ error: 'Название, контакт и тип услуг обязательны' });
+  }
+  try {
+    const documents = req.files ? await Promise.all(req.files.map(async (file) => {
+      const params = {
+        Bucket: process.env.AWS_S3_BUCKET,
+        Key: `suppliers/${Date.now()}_${file.originalname}`,
+        Body: file.buffer,
+        ContentType: file.mimetype,
+      };
+      const { Location } = await s3.upload(params).promise();
+      return Location;
+    })) : [];
+    const [result] = await pool.query(
+      'INSERT INTO suppliers (name, contact, status, service_type, address, documents) VALUES (?, ?, ?, ?, ?, ?)',
+      [name, contact, status || 'Активен', serviceType, address || null, JSON.stringify(documents)]
+    );
+    res.json({ id: result.insertId, name, contact, status: status || 'Активен', service_type: serviceType, address, documents });
+  } catch (err) {
+    console.error('Ошибка создания поставщика:', err);
+    res.status(500).json({ error: 'Ошибка сервера' });
+  }
+});
+
+app.put('/api/suppliers/:id', authenticate, upload.array('documents'), async (req, res) => {
+  const { id } = req.params;
+  const { name, contact, status, serviceType, address, existingDocuments } = req.body;
+  if (!name || !contact || !serviceType) {
+    return res.status(400).json({ error: 'Название, контакт и тип услуг обязательны' });
+  }
+  try {
+    const [existing] = await pool.query('SELECT documents FROM suppliers WHERE id = ?', [id]);
+    if (!existing.length) return res.status(404).json({ error: 'Поставщик не найден' });
+    let documents = existingDocuments ? JSON.parse(existingDocuments) : existing[0].documents || [];
+    if (req.files) {
+      const newDocuments = await Promise.all(req.files.map(async (file) => {
+        const params = {
+          Bucket: process.env.AWS_S3_BUCKET,
+          Key: `suppliers/${Date.now()}_${file.originalname}`,
+          Body: file.buffer,
+          ContentType: file.mimetype,
+        };
+        const { Location } = await s3.upload(params).promise();
+        return Location;
+      }));
+      documents = [...documents, ...newDocuments];
+    }
+    await pool.query(
+      'UPDATE suppliers SET name = ?, contact = ?, status = ?, service_type = ?, address = ?, documents = ? WHERE id = ?',
+      [name, contact, status, serviceType, address || null, JSON.stringify(documents), id]
+    );
+    res.json({ id, name, contact, status, service_type: serviceType, address, documents });
+  } catch (err) {
+    console.error('Ошибка обновления поставщика:', err);
+    res.status(500).json({ error: 'Ошибка сервера' });
+  }
+});
+
+app.delete('/api/suppliers/:id', authenticate, async (req, res) => {
+  const { id } = req.params;
+  try {
+    const [existing] = await pool.query('SELECT documents FROM suppliers WHERE id = ?', [id]);
+    if (!existing.length) return res.status(404).json({ error: 'Поставщик не найден' });
+    if (existing[0].documents) {
+      const documents = JSON.parse(existing[0].documents);
+      await Promise.all(documents.map(async (doc) => {
+        const key = doc.split('/').pop();
+        await s3.deleteObject({ Bucket: process.env.AWS_S3_BUCKET, Key: `suppliers/${key}` }).promise();
+      }));
+    }
+    await pool.query('DELETE FROM suppliers WHERE id = ?', [id]);
+    res.json({ message: 'Поставщик удалён' });
+  } catch (err) {
+    console.error('Ошибка удаления поставщика:', err);
+    res.status(500).json({ error: 'Ошибка сервера' });
+  }
+});
+
+// Эндпоинты для продаж
+app.get('/api/sales', authenticate, async (req, res) => {
+  try {
+    const [sales] = await pool.query(`
+      SELECT s.*, sup.name AS supplier_name, p.title AS property_title
+      FROM sales s
+      JOIN suppliers sup ON s.supplier_id = sup.id
+      JOIN properties p ON s.property_id = p.id
+    `);
+    res.json(sales);
+  } catch (err) {
+    console.error('Ошибка получения продаж:', err);
+    res.status(500).json({ error: 'Ошибка сервера' });
+  }
+});
+
+app.post('/api/sales', authenticate, upload.array('documents'), async (req, res) => {
+  const { supplier_id, property_id, amount, date, status } = req.body;
+  if (!supplier_id || !property_id || !amount || !date) {
+    return res.status(400).json({ error: 'Все поля обязательны' });
+  }
+  try {
+    const documents = req.files ? await Promise.all(req.files.map(async (file) => {
+      const params = {
+        Bucket: process.env.AWS_S3_BUCKET,
+        Key: `sales/${Date.now()}_${file.originalname}`,
+        Body: file.buffer,
+        ContentType: file.mimetype,
+      };
+      const { Location } = await s3.upload(params).promise();
+      return Location;
+    })) : [];
+    const [result] = await pool.query(
+      'INSERT INTO sales (supplier_id, property_id, amount, date, status, documents) VALUES (?, ?, ?, ?, ?, ?)',
+      [supplier_id, property_id, amount, date, status || 'В обработке', JSON.stringify(documents)]
+    );
+    const [sale] = await pool.query(`
+      SELECT s.*, sup.name AS supplier_name, p.title AS property_title
+      FROM sales s
+      JOIN suppliers sup ON s.supplier_id = sup.id
+      JOIN properties p ON s.property_id = p.id
+      WHERE s.id = ?
+    `, [result.insertId]);
+    res.json(sale[0]);
+  } catch (err) {
+    console.error('Ошибка создания продажи:', err);
+    res.status(500).json({ error: 'Ошибка сервера' });
+  }
+});
+
+app.put('/api/sales/:id', authenticate, upload.array('documents'), async (req, res) => {
+  const { id } = req.params;
+  const { supplier_id, property_id, amount, date, status, existingDocuments } = req.body;
+  if (!supplier_id || !property_id || !amount || !date) {
+    return res.status(400).json({ error: 'Все поля обязательны' });
+  }
+  try {
+    const [existing] = await pool.query('SELECT documents FROM sales WHERE id = ?', [id]);
+    if (!existing.length) return res.status(404).json({ error: 'Продажа не найдена' });
+    let documents = existingDocuments ? JSON.parse(existingDocuments) : existing[0].documents || [];
+    if (req.files) {
+      const newDocuments = await Promise.all(req.files.map(async (file) => {
+        const params = {
+          Bucket: process.env.AWS_S3_BUCKET,
+          Key: `sales/${Date.now()}_${file.originalname}`,
+          Body: file.buffer,
+          ContentType: file.mimetype,
+        };
+        const { Location } = await s3.upload(params).promise();
+        return Location;
+      }));
+      documents = [...documents, ...newDocuments];
+    }
+    await pool.query(
+      'UPDATE sales SET supplier_id = ?, property_id = ?, amount = ?, date = ?, status = ?, documents = ? WHERE id = ?',
+      [supplier_id, property_id, amount, date, status, JSON.stringify(documents), id]
+    );
+    const [sale] = await pool.query(`
+      SELECT s.*, sup.name AS supplier_name, p.title AS property_title
+      FROM sales s
+      JOIN suppliers sup ON s.supplier_id = sup.id
+      JOIN properties p ON s.property_id = p.id
+      WHERE s.id = ?
+    `, [id]);
+    res.json(sale[0]);
+  } catch (err) {
+    console.error('Ошибка обновления продажи:', err);
+    res.status(500).json({ error: 'Ошибка сервера' });
+  }
+});
+
+app.delete('/api/sales/:id', authenticate, async (req, res) => {
+  const { id } = req.params;
+  try {
+    const [existing] = await pool.query('SELECT documents FROM sales WHERE id = ?', [id]);
+    if (!existing.length) return res.status(404).json({ error: 'Продажа не найдена' });
+    if (existing[0].documents) {
+      const documents = JSON.parse(existing[0].documents);
+      await Promise.all(documents.map(async (doc) => {
+        const key = doc.split('/').pop();
+        await s3.deleteObject({ Bucket: process.env.AWS_S3_BUCKET, Key: `sales/${key}` }).promise();
+      }));
+    }
+    await pool.query('DELETE FROM sales WHERE id = ?', [id]);
+    res.json({ message: 'Продажа удалена' });
+  } catch (err) {
+    console.error('Ошибка удаления продажи:', err);
+    res.status(500).json({ error: 'Ошибка сервера' });
+  }
+});
+
+// Эндпоинты для клиентов
+app.get('/api/clients', authenticate, async (req, res) => {
+  try {
+    const [clients] = await pool.query('SELECT * FROM clients');
+    res.json(clients);
+  } catch (err) {
+    console.error('Ошибка получения клиентов:', err);
+    res.status(500).json({ error: 'Ошибка сервера' });
+  }
+});
+
+// Эндпоинты для сообщений
+app.get('/api/messages/:clientId', authenticate, async (req, res) => {
+  const { clientId } = req.params;
+  try {
+    const [messages] = await pool.query('SELECT * FROM messages WHERE client_id = ? ORDER BY timestamp ASC', [clientId]);
+    res.json(messages);
+  } catch (err) {
+    console.error('Ошибка получения сообщений:', err);
+    res.status(500).json({ error: 'Ошибка сервера' });
+  }
+});
+
+app.post('/api/messages', authenticate, async (req, res) => {
+  const { client_id, message, sender } = req.body;
+  if (!client_id || !message || !sender) {
+    return res.status(400).json({ error: 'Клиент, сообщение и отправитель обязательны' });
+  }
+  try {
+    const [result] = await pool.query(
+      'INSERT INTO messages (client_id, message, sender, read) VALUES (?, ?, ?, ?)',
+      [client_id, message, sender, sender === 'agent' ? true : false]
+    );
+    const [newMessage] = await pool.query('SELECT * FROM messages WHERE id = ?', [result.insertId]);
+    res.json(newMessage[0]);
+  } catch (err) {
+    console.error('Ошибка отправки сообщения:', err);
+    res.status(500).json({ error: 'Ошибка сервера' });
+  }
+});
+
+// Эндпоинты для задач
+app.get('/api/tasks', authenticate, async (req, res) => {
+  try {
+    const [tasks] = await pool.query('SELECT * FROM tasks');
+    res.json(tasks);
+  } catch (err) {
+    console.error('Ошибка получения задач:', err);
+    res.status(500).json({ error: 'Ошибка сервера' });
+  }
+});
+
+app.post('/api/tasks', authenticate, async (req, res) => {
+  const { title, description, due_date, assigned_to, status } = req.body;
+  if (!title || !due_date || !assigned_to) {
+    return res.status(400).json({ error: 'Название, дата выполнения и ответственный обязательны' });
+  }
+  try {
+    const [result] = await pool.query(
+      'INSERT INTO tasks (title, description, due_date, assigned_to, status) VALUES (?, ?, ?, ?, ?)',
+      [title, description || null, due_date, assigned_to, status || 'Открыта']
+    );
+    const [newTask] = await pool.query('SELECT * FROM tasks WHERE id = ?', [result.insertId]);
+    res.json(newTask[0]);
+  } catch (err) {
+    console.error('Ошибка создания задачи:', err);
+    res.status(500).json({ error: 'Ошибка сервера' });
+  }
+});
+
+app.put('/api/tasks/:id', authenticate, async (req, res) => {
+  const { id } = req.params;
+  const { title, description, due_date, assigned_to, status } = req.body;
+  if (!title || !due_date || !assigned_to) {
+    return res.status(400).json({ error: 'Название, дата выполнения и ответственный обязательны' });
+  }
+  try {
+    const [existing] = await pool.query('SELECT * FROM tasks WHERE id = ?', [id]);
+    if (!existing.length) return res.status(404).json({ error: 'Задача не найдена' });
+    await pool.query(
+      'UPDATE tasks SET title = ?, description = ?, due_date = ?, assigned_to = ?, status = ? WHERE id = ?',
+      [title, description || null, due_date, assigned_to, status, id]
+    );
+    const [updatedTask] = await pool.query('SELECT * FROM tasks WHERE id = ?', [id]);
+    res.json(updatedTask[0]);
+  } catch (err) {
+    console.error('Ошибка обновления задачи:', err);
+    res.status(500).json({ error: 'Ошибка сервера' });
+  }
+});
+
+app.delete('/api/tasks/:id', authenticate, async (req, res) => {
+  const { id } = req.params;
+  try {
+    const [existing] = await pool.query('SELECT * FROM tasks WHERE id = ?', [id]);
+    if (!existing.length) return res.status(404).json({ error: 'Задача не найдена' });
+    await pool.query('DELETE FROM tasks WHERE id = ?', [id]);
+    res.json({ message: 'Задача удалена' });
+  } catch (err) {
+    console.error('Ошибка удаления задачи:', err);
+    res.status(500).json({ error: 'Ошибка сервера' });
+  }
+});
+
+
+
 // Публичный эндпоинт для получения списка ЖК
 // Public endpoint for JK (zhk)
 app.get("/public/jk", async (req, res) => {
