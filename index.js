@@ -367,6 +367,209 @@ app.post("/api/admin/login", async (req, res) => {
   }
 });
 
+
+
+
+// Initialize Database Endpoint (Protected, SUPER_ADMIN only)
+app.post("/api/initialize", authenticate, async (req, res) => {
+  if (req.user.role !== "SUPER_ADMIN") {
+    console.error("Initialize attempt by non-SUPER_ADMIN user:", req.user);
+    return res.status(403).json({ error: "Доступ запрещён: требуется роль SUPER_ADMIN" });
+  }
+
+  let connection;
+  try {
+    console.log("Starting database initialization...");
+    connection = await pool.getConnection();
+    console.log("Database connection established for initialization");
+
+    // Create users1 table
+    const [usersTable] = await connection.execute("SHOW TABLES LIKE 'users1'");
+    if (usersTable.length === 0) {
+      console.log("Creating users1 table...");
+      await connection.execute(`
+        CREATE TABLE users1 (
+          id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+          first_name VARCHAR(255) NOT NULL,
+          last_name VARCHAR(255) NOT NULL,
+          role VARCHAR(50) NOT NULL,
+          email VARCHAR(255) NOT NULL UNIQUE,
+          phone VARCHAR(255) NOT NULL,
+          profile_picture VARCHAR(255) DEFAULT NULL,
+          password VARCHAR(255) NOT NULL,
+          token TEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci DEFAULT NULL
+        ) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci
+      `);
+    } else {
+      console.log("users1 table already exists");
+    }
+
+    // Create properties table
+    const [propTables] = await connection.execute("SHOW TABLES LIKE 'properties'");
+    if (propTables.length === 0) {
+      console.log("Creating properties table...");
+      await connection.execute(`
+        CREATE TABLE properties (
+          id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+          type_id VARCHAR(255) DEFAULT NULL,
+          repair VARCHAR(255) DEFAULT NULL,
+          series VARCHAR(255) DEFAULT NULL,
+          zhk_id VARCHAR(255) DEFAULT NULL,
+          document_id INT NOT NULL DEFAULT 0,
+          owner_name VARCHAR(255) DEFAULT NULL,
+          owner_phone VARCHAR(50) DEFAULT NULL,
+          curator_id INT UNSIGNED DEFAULT NULL,
+          price DECIMAL(15,2) NOT NULL,
+          unit VARCHAR(50) DEFAULT NULL,
+          rukprice DECIMAL(15,2) NOT NULL,
+          mkv DECIMAL(10,2) NOT NULL,
+          rooms VARCHAR(10) DEFAULT NULL,
+          phone VARCHAR(50) DEFAULT NULL,
+          district_id VARCHAR(255) DEFAULT NULL,
+          subdistrict_id VARCHAR(255) DEFAULT NULL,
+          address TEXT NOT NULL,
+          notes TEXT DEFAULT NULL,
+          description TEXT DEFAULT NULL,
+          latitude DECIMAL(10,6) DEFAULT NULL,
+          longitude DECIMAL(10,6) DEFAULT NULL,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          photos TEXT DEFAULT NULL,
+          document VARCHAR(255) DEFAULT NULL,
+          status VARCHAR(50) DEFAULT NULL,
+          owner_id INT DEFAULT NULL,
+          etaj INT NOT NULL,
+          etajnost INT NOT NULL,
+          FOREIGN KEY (curator_id) REFERENCES users1(id) ON DELETE SET NULL
+        ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+      `);
+    } else {
+      console.log("properties table already exists");
+      // Check and add owner_phone column if not exists
+      const [ownerPhoneColumns] = await connection.execute(
+        "SHOW COLUMNS FROM properties LIKE 'owner_phone'"
+      );
+      if (ownerPhoneColumns.length === 0) {
+        console.log("Adding owner_phone column to properties table...");
+        await connection.execute(
+          "ALTER TABLE properties ADD COLUMN owner_phone VARCHAR(50) DEFAULT NULL"
+        );
+      }
+
+      const [conditionColumns] = await connection.execute(
+        "SHOW COLUMNS FROM properties LIKE 'condition'"
+      );
+      if (conditionColumns.length > 0) {
+        console.log("Renaming column 'condition' to 'repair'...");
+        await connection.execute(
+          "ALTER TABLE properties CHANGE COLUMN `condition` `repair` VARCHAR(255) DEFAULT NULL"
+        );
+      }
+
+      const [roomColumns] = await connection.execute(
+        "SHOW COLUMNS FROM properties LIKE 'room'"
+      );
+      if (roomColumns.length > 0) {
+        console.log("Renaming column 'room' to 'rooms'...");
+        await connection.execute(
+          "ALTER TABLE properties CHANGE COLUMN `room` `rooms` VARCHAR(10) DEFAULT NULL"
+        );
+      }
+    }
+
+    // Create jk table
+    const [jkTables] = await connection.execute("SHOW TABLES LIKE 'jk'");
+    if (jkTables.length === 0) {
+      console.log("Creating jk table...");
+      await connection.execute(`
+        CREATE TABLE jk (
+          id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+          name VARCHAR(255) NOT NULL,
+          description TEXT DEFAULT NULL,
+          address VARCHAR(255) DEFAULT NULL,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        ) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci
+      `);
+    } else {
+      console.log("jk table already exists");
+    }
+
+    // Create districts table
+    const [districtTables] = await connection.execute("SHOW TABLES LIKE 'districts'");
+    if (districtTables.length === 0) {
+      console.log("Creating districts table...");
+      await connection.execute(`
+        CREATE TABLE districts (
+          id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+          name VARCHAR(255) NOT NULL,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        ) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci
+      `);
+    } else {
+      console.log("districts table already exists");
+    }
+
+    // Create subdistricts table
+    const [subdistrictTables] = await connection.execute("SHOW TABLES LIKE 'subdistricts'");
+    if (subdistrictTables.length === 0) {
+      console.log("Creating subdistricts table...");
+      await connection.execute(`
+        CREATE TABLE subdistricts (
+          id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+          name VARCHAR(255) NOT NULL,
+          district_id INT UNSIGNED NOT NULL,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (district_id) REFERENCES districts(id) ON DELETE CASCADE
+        ) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci
+      `);
+    } else {
+      console.log("subdistricts table already exists");
+    }
+
+    // Setup admin user
+    const adminEmail = process.env.ADMIN_EMAIL || "admin@example.com";
+    const adminPassword = process.env.ADMIN_PASSWORD || "admin123";
+    const hashedPassword = await bcrypt.hash(adminPassword, 10);
+    const [existingAdmin] = await connection.execute("SELECT id FROM users1 WHERE email = ?", [adminEmail]);
+
+    if (existingAdmin.length === 0) {
+      console.log("Creating admin user...");
+      const token = jwt.sign({ id: 1, role: "SUPER_ADMIN" }, jwtSecret, { expiresIn: "30d" });
+      await connection.execute(
+        "INSERT INTO users1 (first_name, last_name, email, phone, role, password, token) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ["Admin", "User", adminEmail, "123456789", "SUPER_ADMIN", hashedPassword, token]
+      );
+      console.log("Admin user created:", { email: adminEmail, role: "SUPER_ADMIN" });
+    } else {
+      console.log("Updating admin user...");
+      const token = jwt.sign({ id: existingAdmin[0].id, role: "SUPER_ADMIN" }, jwtSecret, { expiresIn: "30d" });
+      await connection.execute(
+        "UPDATE users1 SET password = ?, token = ? WHERE email = ?",
+        [hashedPassword, token, adminEmail]
+      );
+      console.log("Admin user updated:", { email: adminEmail, role: "SUPER_ADMIN" });
+    }
+
+    res.status(200).json({
+      message: "Инициализация базы данных успешно завершена",
+      admin: { email: adminEmail, role: "SUPER_ADMIN" },
+    });
+  } catch (error) {
+    console.error("Database initialization error:", {
+      message: error.message,
+      code: error.code,
+      sqlMessage: error.sqlMessage,
+      stack: error.stack,
+    });
+    if (error.code === "ECONNREFUSED") {
+      return res.status(500).json({ error: "Ошибка подключения к MySQL: сервер не запущен или неверный хост/порт" });
+    }
+    res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
 // Logout Endpoint
 app.post("/api/logout", authenticate, async (req, res) => {
   let connection;
