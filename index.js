@@ -494,7 +494,7 @@ app.post("/api/initialize", authenticate, async (req, res) => {
       console.log("jk table already exists");
     }
 
-    // Create districts table
+    // Create districts table87487
     const [districtTables] = await connection.execute("SHOW TABLES LIKE 'districts'");
     if (districtTables.length === 0) {
       console.log("Creating districts table...");
