@@ -2109,37 +2109,10 @@ app.get("/public/properties/:id", async (req, res) => {
     connection = await pool.getConnection();
 
     const [rows] = await connection.execute(
-      `SELECT 
-          p.id,
-          p.type_id,
-          p.repair,
-          p.series,
-          p.zhk_id,
-          p.price,
-          p.mkv,
-          p.rooms,
-          p.district_id,
-          p.subdistrict_id,
-          p.address,
-          p.description,
-          p.notes,
-          p.status,
-          p.etaj,
-          p.etajnost,
-          p.photos,
-          p.document,
-          p.owner_name,
-          p.owner_phone,
-          p.curator_id,
-          p.phone,
-          p.owner_id,
-          p.latitude,
-          p.longitude,
-          CONCAT(u.first_name, ' ', u.last_name) AS curator_name,
-          u.phone AS curator_phone
-        FROM properties p
-        LEFT JOIN users1 u ON p.curator_id = u.id
-        WHERE p.id = ?`,
+      `SELECT id, type_id, repair, series, zhk_id, price, mkv, rooms, district_id, subdistrict_id, 
+              address, description, notes, status, etaj, etajnost, photos, document, owner_name, 
+              owner_phone, curator_id, phone, owner_id, latitude, longitude, created_at
+       FROM properties WHERE id = ?`,
       [parseInt(id)]
     );
 
@@ -2157,7 +2130,7 @@ app.get("/public/properties/:id", async (req, res) => {
       parsedPhotos = [];
     }
 
-      const finalContactPhone = row.owner_phone || row.phone || null;
+    const finalContactPhone = row.owner_phone || row.phone || null;
 
     const property = {
       id: row.id,
@@ -2181,8 +2154,6 @@ app.get("/public/properties/:id", async (req, res) => {
       owner_name: row.owner_name || null,
       owner_phone: row.owner_phone || null,
       curator_id: row.curator_id || null,
-      curator_name: row.curator_name || null,
-      curator_phone: row.curator_phone || null,
       contact_phone: finalContactPhone,
       phone: row.phone || null,
       owner_id: row.owner_id || null,
@@ -3108,7 +3079,7 @@ app.get("/public/properties", async (req, res) => {
     parsedPhotos = [];
   }
 
-      const contactPhone = row.owner_phone || row.curator_phone || null;
+      const contactPhone = row.owner_phone || row.phone || null;
 
       return {
         id: row.id,
@@ -3129,7 +3100,7 @@ app.get("/public/properties", async (req, res) => {
         owner_phone: row.owner_phone || null,
         owner_name: row.owner_name || null,
         curator_id: row.curator_id || null,
-        contact_phone: finalContactPhone,
+        contact_phone: contactPhone,
         photos: parsedPhotos.map(
           img => `https://s3.twcstorage.ru/${bucketName}/${img}`
         )
