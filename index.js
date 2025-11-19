@@ -141,11 +141,22 @@ const authenticate = async (req, res, next) => {
           amount DECIMAL(12,2) NOT NULL,
           payment_method VARCHAR(100) NOT NULL,
           status VARCHAR(50) DEFAULT 'processing',
+          photos TEXT DEFAULT NULL,
           created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
           updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
           FOREIGN KEY (user_id) REFERENCES users1(id) ON DELETE CASCADE
         ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
       `);
+    } else {
+      // Check if photos column exists, if not add it
+      const [columns] = await connection.execute("SHOW COLUMNS FROM promotion_orders LIKE 'photos'");
+      if (columns.length === 0) {
+        console.log("Adding photos column to promotion_orders table...");
+        await connection.execute(`
+          ALTER TABLE promotion_orders 
+          ADD COLUMN photos TEXT DEFAULT NULL
+        `);
+      }
     }
 
     req.user = {
@@ -541,7 +552,7 @@ app.get("/public/auth/profile", authenticate, async (req, res) => {
   }
 });
 
-app.post("/public/payments", authenticate, async (req, res) => {
+app.post("/public/payments", authenticate, upload.array("photos", 10), async (req, res) => {
   const {
     propertyId,
     propertyTitle,
@@ -549,6 +560,7 @@ app.post("/public/payments", authenticate, async (req, res) => {
     duration,
     placement,
     paymentMethod = "QR",
+    photoUrls,
   } = req.body || {};
 
   if (!propertyId || !propertyTitle || !amount || !duration || !placement) {
@@ -580,6 +592,67 @@ app.post("/public/payments", authenticate, async (req, res) => {
       return res.status(400).json({ error: "Недостаточно средств на балансе" });
     }
 
+    // Получаем фотографии объявления из базы данных
+    let propertyPhotos = [];
+    try {
+      const [propertyRows] = await connection.execute(
+        "SELECT photos FROM properties WHERE id = ?",
+        [propertyId]
+      );
+      if (propertyRows.length > 0 && propertyRows[0].photos) {
+        try {
+          propertyPhotos = JSON.parse(propertyRows[0].photos) || [];
+        } catch (parseError) {
+          console.warn(`Error parsing property photos for ID ${propertyId}:`, parseError.message);
+          propertyPhotos = [];
+        }
+      }
+    } catch (propertyError) {
+      console.warn(`Error fetching property photos for ID ${propertyId}:`, propertyError.message);
+    }
+
+    // Обрабатываем фотографии из запроса (URLs)
+    let photoUrlsFromRequest = [];
+    if (photoUrls && Array.isArray(photoUrls) && photoUrls.length > 0) {
+      // Извлекаем ключи из URL (если это S3 URLs)
+      photoUrlsFromRequest = photoUrls.map(url => {
+        if (typeof url === 'string' && url.includes(bucketName)) {
+          // Извлекаем ключ из URL вида https://s3.twcstorage.ru/bucketName/key
+          const parts = url.split(`/${bucketName}/`);
+          if (parts.length > 1) {
+            return parts[1];
+          }
+        }
+        return null;
+      }).filter(key => key !== null);
+    }
+
+    // Обрабатываем загруженные фотографии (если есть)
+    const uploadedPhotoKeys = [];
+    if (req.files && req.files.length > 0) {
+      for (const photo of req.files) {
+        try {
+          const key = `${Date.now()}-${Math.round(Math.random() * 1e9)}${path.extname(photo.originalname)}`;
+          await s3Client.send(new PutObjectCommand({
+            Bucket: bucketName,
+            Key: key,
+            Body: photo.buffer,
+            ContentType: photo.mimetype,
+          }));
+          uploadedPhotoKeys.push(key);
+        } catch (error) {
+          console.error(`Failed to upload photo to S3: ${photo.originalname}`, error.message);
+          // Продолжаем даже если одна фотография не загрузилась
+        }
+      }
+    }
+
+    // Объединяем фотографии: сначала загруженные файлы, потом URLs из запроса, потом из объявления
+    const allPhotos = [...uploadedPhotoKeys, ...photoUrlsFromRequest, ...propertyPhotos];
+    // Удаляем дубликаты
+    const uniquePhotos = [...new Set(allPhotos)];
+    const photosJson = uniquePhotos.length > 0 ? JSON.stringify(uniquePhotos) : null;
+
     const newBalance = currentBalance - normalizedAmount;
     await connection.execute(
       "UPDATE users1 SET balance = ? WHERE id = ?",
@@ -588,8 +661,8 @@ app.post("/public/payments", authenticate, async (req, res) => {
 
     const [result] = await connection.execute(
       `INSERT INTO promotion_orders
-        (user_id, property_id, property_title, duration, placement, amount, payment_method, status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        (user_id, property_id, property_title, duration, placement, amount, payment_method, status, photos)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         req.user.id,
         propertyId,
@@ -599,10 +672,14 @@ app.post("/public/payments", authenticate, async (req, res) => {
         normalizedAmount,
         paymentMethod,
         "processing",
+        photosJson,
       ]
     );
 
     await connection.commit();
+
+    // Формируем полные URL для фотографий
+    const photoUrls = uniquePhotos.map(img => `https://s3.twcstorage.ru/${bucketName}/${img}`);
 
     res.status(201).json({
       message: "Оплата успешно зарегистрирована",
@@ -615,6 +692,7 @@ app.post("/public/payments", authenticate, async (req, res) => {
         amount: normalizedAmount,
         payment_method: paymentMethod,
         status: "processing",
+        photos: photoUrls,
       },
       balance: newBalance,
     });
@@ -641,14 +719,31 @@ app.get("/public/payments", authenticate, async (req, res) => {
   try {
     connection = await pool.getConnection();
     const [rows] = await connection.execute(
-      `SELECT id, property_id, property_title, duration, placement, amount, payment_method, status, created_at
+      `SELECT id, property_id, property_title, duration, placement, amount, payment_method, status, photos, created_at
        FROM promotion_orders
        WHERE user_id = ?
        ORDER BY created_at DESC`,
       [req.user.id]
     );
 
-    res.json(rows);
+    // Обрабатываем фотографии для каждого заказа
+    const ordersWithPhotos = rows.map(row => {
+      let parsedPhotos = [];
+      if (row.photos) {
+        try {
+          parsedPhotos = JSON.parse(row.photos) || [];
+        } catch (error) {
+          console.warn(`Error parsing photos for order ID ${row.id}:`, error.message);
+          parsedPhotos = [];
+        }
+      }
+      return {
+        ...row,
+        photos: parsedPhotos.map(img => `https://s3.twcstorage.ru/${bucketName}/${img}`),
+      };
+    });
+
+    res.json(ordersWithPhotos);
   } catch (error) {
     console.error("Fetch payments error:", {
       message: error.message,
@@ -676,22 +771,34 @@ app.get("/api/payments", authenticate, async (req, res) => {
        ORDER BY po.created_at DESC`
     );
 
-    const payments = rows.map((row) => ({
-      id: row.id,
-      user_id: row.user_id,
-      user_name: `${row.first_name || ""} ${row.last_name || ""}`.trim(),
-      user_email: row.email,
-      user_phone: row.phone,
-      property_id: row.property_id,
-      property_title: row.property_title,
-      duration: row.duration,
-      placement: row.placement,
-      amount: Number(row.amount),
-      payment_method: row.payment_method,
-      status: row.status,
-      created_at: row.created_at,
-      updated_at: row.updated_at,
-    }));
+    const payments = rows.map((row) => {
+      let parsedPhotos = [];
+      if (row.photos) {
+        try {
+          parsedPhotos = JSON.parse(row.photos) || [];
+        } catch (error) {
+          console.warn(`Error parsing photos for order ID ${row.id}:`, error.message);
+          parsedPhotos = [];
+        }
+      }
+      return {
+        id: row.id,
+        user_id: row.user_id,
+        user_name: `${row.first_name || ""} ${row.last_name || ""}`.trim(),
+        user_email: row.email,
+        user_phone: row.phone,
+        property_id: row.property_id,
+        property_title: row.property_title,
+        duration: row.duration,
+        placement: row.placement,
+        amount: Number(row.amount),
+        payment_method: row.payment_method,
+        status: row.status,
+        photos: parsedPhotos.map(img => `https://s3.twcstorage.ru/${bucketName}/${img}`),
+        created_at: row.created_at,
+        updated_at: row.updated_at,
+      };
+    });
 
     res.json(payments);
   } catch (error) {
@@ -1819,6 +1926,11 @@ app.patch("/public/user/properties/:id/submit", authenticate, async (req, res) =
 
 // Public endpoint for regular users to create listings
 app.post("/public/user/properties", authenticate, upload.array("photos", MAX_USER_PROPERTY_PHOTOS), async (req, res) => {
+  console.log("=== Creating property from user ===");
+  console.log("Request body:", req.body);
+  console.log("Files received:", req.files?.length || 0);
+  console.log("User ID:", req.user?.id);
+  
   const {
     category,
     deal_type,
@@ -1838,6 +1950,17 @@ app.post("/public/user/properties", authenticate, upload.array("photos", MAX_USE
   const cleanRooms = rooms?.trim();
   const cleanLocation = location?.trim();
   const cleanPhone = phone?.trim();
+  
+  console.log("Cleaned data:", {
+    category: cleanCategory,
+    deal_type: cleanDealType,
+    title: cleanTitle,
+    price,
+    area,
+    rooms: cleanRooms,
+    location: cleanLocation,
+    phone: cleanPhone,
+  });
 
   if (!cleanCategory || !cleanDealType || !cleanTitle || !cleanDescription || !price || !area || !cleanRooms || !cleanLocation || !cleanPhone) {
     return res.status(400).json({ error: "Заполните обязательные поля: категория, тип сделки, название, описание, цена, площадь, комнаты, адрес и телефон." });
@@ -1864,41 +1987,61 @@ app.post("/public/user/properties", authenticate, upload.array("photos", MAX_USE
     const filenames = [];
     for (const photo of uploadedPhotos) {
       const key = `${Date.now()}-${Math.round(Math.random() * 1e9)}${path.extname(photo.originalname)}`;
-      await s3Client.send(new PutObjectCommand({
-        Bucket: bucketName,
-        Key: key,
-        Body: photo.buffer,
-        ContentType: photo.mimetype,
-      }));
-      filenames.push(key);
+      console.log(`Uploading photo: ${photo.originalname} -> ${key} (${photo.size} bytes, ${photo.mimetype})`);
+      try {
+        await s3Client.send(new PutObjectCommand({
+          Bucket: bucketName,
+          Key: key,
+          Body: photo.buffer,
+          ContentType: photo.mimetype,
+        }));
+        filenames.push(key);
+        console.log(`Photo uploaded successfully: ${key}`);
+      } catch (s3Error) {
+        console.error(`Failed to upload photo ${photo.originalname}:`, s3Error);
+        throw new Error(`Не удалось загрузить фото: ${photo.originalname}`);
+      }
     }
 
     const ownerName = `${req.user.first_name || ""} ${req.user.last_name || ""}`.trim() || null;
     const contactPhone = cleanPhone;
 
+    const insertValues = [
+      cleanTitle,
+      cleanCategory,
+      ownerName,
+      contactPhone,
+      parsedPrice,
+      parsedArea,
+      cleanRooms,
+      contactPhone,
+      cleanLocation,
+      cleanDescription,
+      JSON.stringify(filenames),
+      req.user.id,
+      cleanDealType,
+      1,
+      1,
+      "Создано пользователем через приложение",
+    ];
+    
+    console.log("Inserting property with values:", {
+      title: cleanTitle,
+      type_id: cleanCategory,
+      owner_name: ownerName,
+      price: parsedPrice,
+      area: parsedArea,
+      photos_count: filenames.length,
+    });
+    
     const [result] = await connection.execute(
       `INSERT INTO properties (
         title, type_id, owner_name, owner_phone, price, mkv, rooms, phone, address, description, photos, status, owner_id, unit, etaj, etajnost, notes
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending_review', ?, ?, ?, ?, ?)`,
-      [
-        cleanTitle,
-        cleanCategory,
-        ownerName,
-        contactPhone,
-        parsedPrice,
-        parsedArea,
-        cleanRooms,
-        contactPhone,
-        cleanLocation,
-        cleanDescription,
-        JSON.stringify(filenames),
-        req.user.id,
-        cleanDealType,
-        1,
-        1,
-        "Создано пользователем через приложение",
-      ]
+      insertValues
     );
+
+    console.log("Property created successfully with ID:", result.insertId);
 
     res.status(201).json({
       id: result.insertId,
