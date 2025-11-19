@@ -586,7 +586,7 @@ app.post("/public/payments", authenticate, upload.array("photos", 10), async (re
     duration,
     placement,
     paymentMethod = "QR",
-    photoUrls,
+    photoUrls: photoUrlsRaw,
   } = req.body || {};
 
   if (!propertyId || !propertyTitle || !amount || !duration || !placement) {
@@ -596,6 +596,27 @@ app.post("/public/payments", authenticate, upload.array("photos", 10), async (re
   const normalizedAmount = parseFloat(amount);
   if (isNaN(normalizedAmount) || normalizedAmount <= 0) {
     return res.status(400).json({ error: "Сумма должна быть положительным числом" });
+  }
+
+  // Обрабатываем photoUrls - может быть массивом или строкой JSON
+  let photoUrls = [];
+  if (photoUrlsRaw) {
+    try {
+      if (typeof photoUrlsRaw === 'string') {
+        // Если это строка, пытаемся распарсить как JSON
+        photoUrls = JSON.parse(photoUrlsRaw);
+      } else if (Array.isArray(photoUrlsRaw)) {
+        // Если это уже массив, используем как есть
+        photoUrls = photoUrlsRaw;
+      }
+      // Убеждаемся, что это массив
+      if (!Array.isArray(photoUrls)) {
+        photoUrls = [];
+      }
+    } catch (parseError) {
+      console.warn(`Error parsing photoUrls:`, parseError.message);
+      photoUrls = [];
+    }
   }
 
   let connection;
@@ -705,7 +726,7 @@ app.post("/public/payments", authenticate, upload.array("photos", 10), async (re
     await connection.commit();
 
     // Формируем полные URL для фотографий
-    const photoUrls = uniquePhotos.map(img => `https://s3.twcstorage.ru/${bucketName}/${img}`);
+    const photoUrlsResponse = uniquePhotos.map(img => `https://s3.twcstorage.ru/${bucketName}/${img}`);
 
     res.status(201).json({
       message: "Оплата успешно зарегистрирована",
@@ -718,7 +739,7 @@ app.post("/public/payments", authenticate, upload.array("photos", 10), async (re
         amount: normalizedAmount,
         payment_method: paymentMethod,
         status: "processing",
-        photos: photoUrls,
+        photos: photoUrlsResponse,
       },
       balance: newBalance,
     });
