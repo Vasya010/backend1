@@ -660,6 +660,88 @@ app.get("/public/payments", authenticate, async (req, res) => {
   }
 });
 
+// Admin payments overview
+app.get("/api/payments", authenticate, async (req, res) => {
+  if (!["SUPER_ADMIN", "ADMIN"].includes(req.user.role)) {
+    return res.status(403).json({ error: "Доступ запрещён: требуется роль ADMIN или SUPER_ADMIN" });
+  }
+
+  let connection;
+  try {
+    connection = await pool.getConnection();
+    const [rows] = await connection.execute(
+      `SELECT po.*, u.first_name, u.last_name, u.email, u.phone
+       FROM promotion_orders po
+       LEFT JOIN users1 u ON u.id = po.user_id
+       ORDER BY po.created_at DESC`
+    );
+
+    const payments = rows.map((row) => ({
+      id: row.id,
+      user_id: row.user_id,
+      user_name: `${row.first_name || ""} ${row.last_name || ""}`.trim(),
+      user_email: row.email,
+      user_phone: row.phone,
+      property_id: row.property_id,
+      property_title: row.property_title,
+      duration: row.duration,
+      placement: row.placement,
+      amount: Number(row.amount),
+      payment_method: row.payment_method,
+      status: row.status,
+      created_at: row.created_at,
+      updated_at: row.updated_at,
+    }));
+
+    res.json(payments);
+  } catch (error) {
+    console.error("Admin payments fetch error:", {
+      message: error.message,
+      stack: error.stack,
+    });
+    res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
+app.patch("/api/payments/:id", authenticate, async (req, res) => {
+  if (!["SUPER_ADMIN", "ADMIN"].includes(req.user.role)) {
+    return res.status(403).json({ error: "Доступ запрещён: требуется роль ADMIN или SUPER_ADMIN" });
+  }
+
+  const { id } = req.params;
+  const { status } = req.body || {};
+  const allowedStatuses = ["processing", "active", "completed", "rejected"];
+  if (!status || !allowedStatuses.includes(status)) {
+    return res.status(400).json({ error: "Некорректный статус" });
+  }
+
+  let connection;
+  try {
+    connection = await pool.getConnection();
+    const [orders] = await connection.execute("SELECT id FROM promotion_orders WHERE id = ?", [id]);
+    if (orders.length === 0) {
+      return res.status(404).json({ error: "Заявка не найдена" });
+    }
+
+    await connection.execute(
+      "UPDATE promotion_orders SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+      [status, id]
+    );
+
+    res.json({ message: "Статус обновлён" });
+  } catch (error) {
+    console.error("Admin payment status update error:", {
+      message: error.message,
+      stack: error.stack,
+    });
+    res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
 app.patch("/public/payments/:id", authenticate, async (req, res) => {
   const { id } = req.params;
   const { status } = req.body || {};
