@@ -99,10 +99,11 @@ const upload = multer({
       return;
     }
 
-    // Если MIME тип application/octet-stream, проверяем расширение файла
+    // Если MIME тип application/octet-stream или не указан, проверяем расширение файла
     if (file.mimetype === 'application/octet-stream' || !file.mimetype) {
       if (hasImageExtension(file.originalname)) {
-        console.log(`File ${file.originalname} accepted for upload (extension check, MIME: ${file.mimetype})`);
+        const fileExtension = path.extname(file.originalname).toLowerCase();
+        console.log(`File ${file.originalname} accepted for upload (by extension: ${fileExtension}, MIME: ${file.mimetype})`);
         cb(null, true);
         return;
       }
