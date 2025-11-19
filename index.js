@@ -2069,10 +2069,37 @@ app.get("/public/properties/:id", async (req, res) => {
     connection = await pool.getConnection();
 
     const [rows] = await connection.execute(
-      `SELECT id, type_id, repair, series, zhk_id, price, mkv, rooms, district_id, subdistrict_id, 
-              address, description, notes, status, etaj, etajnost, photos, document, owner_name, 
-              owner_phone, curator_id, phone, owner_id, latitude, longitude
-       FROM properties WHERE id = ?`,
+      `SELECT 
+          p.id,
+          p.type_id,
+          p.repair,
+          p.series,
+          p.zhk_id,
+          p.price,
+          p.mkv,
+          p.rooms,
+          p.district_id,
+          p.subdistrict_id,
+          p.address,
+          p.description,
+          p.notes,
+          p.status,
+          p.etaj,
+          p.etajnost,
+          p.photos,
+          p.document,
+          p.owner_name,
+          p.owner_phone,
+          p.curator_id,
+          p.phone,
+          p.owner_id,
+          p.latitude,
+          p.longitude,
+          CONCAT(u.first_name, ' ', u.last_name) AS curator_name,
+          u.phone AS curator_phone
+        FROM properties p
+        LEFT JOIN users1 u ON p.curator_id = u.id
+        WHERE p.id = ?`,
       [parseInt(id)]
     );
 
@@ -2089,6 +2116,8 @@ app.get("/public/properties/:id", async (req, res) => {
       console.warn(`Ошибка парсинга photos для ID ${id}:`, error.message);
       parsedPhotos = [];
     }
+
+    const contactPhone = row.owner_phone || row.curator_phone || row.phone || null;
 
     const property = {
       id: row.id,
@@ -2112,6 +2141,9 @@ app.get("/public/properties/:id", async (req, res) => {
       owner_name: row.owner_name || null,
       owner_phone: row.owner_phone || null,
       curator_id: row.curator_id || null,
+      curator_name: row.curator_name || null,
+      curator_phone: row.curator_phone || null,
+      contact_phone: contactPhone,
       phone: row.phone || null,
       owner_id: row.owner_id || null,
       latitude: row.latitude || null,
@@ -2890,9 +2922,31 @@ app.get("/public/properties", async (req, res) => {
   } = req.query;
 
   let connection;
-  let query = `SELECT id, type_id, repair, series, zhk_id, price, mkv, rooms, district_id, subdistrict_id, 
-                      address, description, status, etaj, etajnost, photos 
-               FROM properties WHERE 1=1`;
+  let query = `SELECT 
+                 p.id,
+                 p.type_id,
+                 p.repair,
+                 p.series,
+                 p.zhk_id,
+                 p.price,
+                 p.mkv,
+                 p.rooms,
+                 p.district_id,
+                 p.subdistrict_id,
+                 p.address,
+                 p.description,
+                 p.status,
+                 p.etaj,
+                 p.etajnost,
+                 p.photos,
+                 p.owner_phone,
+                 p.owner_name,
+                 p.curator_id,
+                 CONCAT(u.first_name, ' ', u.last_name) AS curator_name,
+                 u.phone AS curator_phone
+               FROM properties p
+               LEFT JOIN users1 u ON p.curator_id = u.id
+               WHERE 1=1`;
   let params = [];
 
   try {
@@ -2911,7 +2965,7 @@ app.get("/public/properties", async (req, res) => {
 
     // Фильтры
     if (bid && !isNaN(parseInt(bid))) {
-      query += ` AND id = ?`;
+      query += ` AND p.id = ?`;
       params.push(parseInt(bid));
     } else if (bid) {
       return res.status(400).json({ error: "Недействительный параметр bid: должен быть числом" });
@@ -2923,68 +2977,68 @@ app.get("/public/properties", async (req, res) => {
     }
 
     if (ftype && ftype !== "all" && typeof ftype === "string") {
-      query += ` AND type_id = ?`;
+      query += ` AND p.type_id = ?`;
       params.push(ftype);
     }
 
     if (fjk && fjk !== "all" && typeof fjk === "string") {
-      query += ` AND zhk_id = ?`;
+      query += ` AND p.zhk_id = ?`;
       params.push(fjk);
     }
 
     if (fseria && fseria !== "all" && typeof fseria === "string") {
-      query += ` AND series = ?`;
+      query += ` AND p.series = ?`;
       params.push(fseria);
     }
 
     if (fsost && fsost !== "all") {
       if (fsost === "3") {
-        query += ` AND repair IS NULL`;
+        query += ` AND p.repair IS NULL`;
       } else if (fsost === "1") {
-        query += ` AND repair = ?`;
+        query += ` AND p.repair = ?`;
         params.push("ПСО");
       } else if (fsost === "2") {
-        query += ` AND repair = ?`;
+        query += ` AND p.repair = ?`;
         params.push("С отделкой");
       }
     }
 
     if (room && typeof room === "string" && room !== "") {
-      query += ` AND rooms = ?`;
+      query += ` AND p.rooms = ?`;
       params.push(room);
     }
 
     if (frayon && frayon !== "all" && typeof frayon === "string") {
-      query += ` AND district_id = ?`;
+      query += ` AND p.district_id = ?`;
       params.push(frayon);
     }
 
     if (fsubrayon && fsubrayon !== "all" && typeof fsubrayon === "string") {
-      query += ` AND subdistrict_id = ?`;
+      query += ` AND p.subdistrict_id = ?`;
       params.push(fsubrayon);
     }
 
     if (fprice && !isNaN(parseFloat(fprice))) {
-      query += ` AND price >= ?`;
+      query += ` AND p.price >= ?`;
       params.push(parseFloat(fprice));
     }
 
     if (fpriceto && !isNaN(parseFloat(fpriceto))) {
-      query += ` AND price <= ?`;
+      query += ` AND p.price <= ?`;
       params.push(parseFloat(fpriceto));
     }
 
     if (mkv && !isNaN(parseFloat(mkv))) {
-      query += ` AND mkv >= ?`;
+      query += ` AND p.mkv >= ?`;
       params.push(parseFloat(mkv));
     }
 
     if (fetaj && fetaj !== "all") {
       if (fetaj === "4") {
-        query += ` AND etaj >= ?`;
+        query += ` AND p.etaj >= ?`;
         params.push(4);
       } else if (!isNaN(parseInt(fetaj))) {
-        query += ` AND etaj = ?`;
+        query += ` AND p.etaj = ?`;
         params.push(parseInt(fetaj));
       }
     }
@@ -3016,26 +3070,34 @@ app.get("/public/properties", async (req, res) => {
     parsedPhotos = [];
   }
 
-  return {
-    id: row.id,
-    type_id: row.type_id || null,
-    repair: row.repair || null,
-    series: row.series || null,
-    zhk_id: row.zhk_id || null,
-    price: row.price || null,
-    mkv: row.mkv || null,
-    rooms: row.rooms || null,
-    district_id: row.district_id || null,
-    subdistrict_id: row.subdistrict_id || null,
-    address: row.address || null,
-    description: row.description || null,
-    status: row.status || null,
-    etaj: row.etaj || null,
-    etajnost: row.etajnost || null,
-    photos: parsedPhotos.map(
-      img => `https://s3.twcstorage.ru/${bucketName}/${img}`
-    )
-  };
+      const contactPhone = row.owner_phone || row.curator_phone || null;
+
+      return {
+        id: row.id,
+        type_id: row.type_id || null,
+        repair: row.repair || null,
+        series: row.series || null,
+        zhk_id: row.zhk_id || null,
+        price: row.price || null,
+        mkv: row.mkv || null,
+        rooms: row.rooms || null,
+        district_id: row.district_id || null,
+        subdistrict_id: row.subdistrict_id || null,
+        address: row.address || null,
+        description: row.description || null,
+        status: row.status || null,
+        etaj: row.etaj || null,
+        etajnost: row.etajnost || null,
+        owner_phone: row.owner_phone || null,
+        owner_name: row.owner_name || null,
+        curator_id: row.curator_id,
+        curator_name: row.curator_name || null,
+        curator_phone: row.curator_phone || null,
+        contact_phone: contactPhone,
+        photos: parsedPhotos.map(
+          img => `https://s3.twcstorage.ru/${bucketName}/${img}`
+        )
+      };
 });
 
 
