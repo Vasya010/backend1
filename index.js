@@ -2134,6 +2134,24 @@ app.put("/api/properties/:id", authenticate, upload.fields([
     existingPhotos,
   } = req.body;
 
+  // Логируем входящие данные для отладки
+  console.log("=== Property Update Request ===");
+  console.log("Property ID:", id);
+  console.log("User:", req.user?.email, "Role:", req.user?.role);
+  console.log("Body fields:", {
+    type_id,
+    price,
+    rukprice,
+    mkv,
+    address,
+    etaj,
+    etajnost,
+    rooms,
+    repair,
+    series,
+    status,
+  });
+
   const photos = req.files["photos"] ? req.files["photos"].map(file => ({
     filename: `${Date.now()}-${Math.round(Math.random() * 1e9)}${path.extname(file.originalname)}`,
     buffer: file.buffer,
@@ -2146,26 +2164,43 @@ app.put("/api/properties/:id", authenticate, upload.fields([
     mimetype: req.files["document"][0].mimetype,
   } : null;
 
-  if (!type_id || !price || !rukprice || !mkv || !address || !etaj || !etajnost) {
-    return res.status(400).json({ error: "Все обязательные поля (type_id, price, rukprice, mkv, address, etaj, etajnost) должны быть заполнены" });
+  // Проверяем обязательные поля (учитываем пустые строки как отсутствие)
+  const missingFields = [];
+  if (!type_id || type_id.trim() === '') missingFields.push('type_id');
+  if (!price || price === '' || price === null || price === undefined) missingFields.push('price');
+  if (!rukprice || rukprice === '' || rukprice === null || rukprice === undefined) missingFields.push('rukprice');
+  if (!mkv || mkv === '' || mkv === null || mkv === undefined) missingFields.push('mkv');
+  if (!address || address.trim() === '') missingFields.push('address');
+  if (!etaj || etaj === '' || etaj === null || etaj === undefined) missingFields.push('etaj');
+  if (!etajnost || etajnost === '' || etajnost === null || etajnost === undefined) missingFields.push('etajnost');
+  
+  if (missingFields.length > 0) {
+    console.error("Missing required fields:", missingFields);
+    return res.status(400).json({ error: `Все обязательные поля (type_id, price, rukprice, mkv, address, etaj, etajnost) должны быть заполнены. Отсутствуют: ${missingFields.join(', ')}` });
   }
 
   if (isNaN(parseFloat(price)) || isNaN(parseFloat(rukprice)) || isNaN(parseFloat(mkv)) || isNaN(parseInt(etaj)) || isNaN(parseInt(etajnost))) {
+    console.error("Invalid numeric values:", { price, rukprice, mkv, etaj, etajnost });
     return res.status(400).json({ error: "Поля price, rukprice, mkv, etaj, etajnost должны быть числами" });
   }
 
-  if (type_id === "Квартира" && repair && !["ПСО", "С отделкой"].includes(repair)) {
+  // Валидация опциональных полей только если они указаны и не пустые
+  if (type_id === "Квартира" && repair && typeof repair === 'string' && repair.trim() !== '' && !["ПСО", "С отделкой"].includes(repair.trim())) {
+    console.error("Invalid repair value:", repair);
     return res.status(400).json({ error: "Недействительное значение ремонта. Должно быть: ПСО, С отделкой" });
   }
 
-  if (type_id === "Квартира" && series && ![
+  if (type_id === "Квартира" && series && typeof series === 'string' && series.trim() !== '' && ![
     "105 серия", "106 серия", "Индивидуалка", "Элитка", "103 серия", "106 серия улучшенная",
     "107 серия", "108 серия", "Малосемейка", "Общежитие и Гостиничного типа", "Сталинка", "Хрущевка"
-  ].includes(series)) {
+  ].includes(series.trim())) {
+    console.error("Invalid series value:", series);
     return res.status(400).json({ error: "Недействительная серия. Должна быть одной из: 105 серия, 106 серия, Индивидуалка, Элитка, 103 серия, 106 серия улучшенная, 107 серия, 108 серия, Малосемейка, Общежитие и Гостиничного типа, Сталинка, Хрущевка" });
   }
 
-  if (type_id === "Квартира" && rooms && !["1", "2", "3", "4", "5+"].includes(rooms)) {
+  // rooms проверяем только если указано и не пустое
+  if (type_id === "Квартира" && rooms && (typeof rooms === 'string' ? rooms.trim() !== '' : rooms) && !["1", "2", "3", "4", "5+"].includes(String(rooms).trim())) {
+    console.error("Invalid rooms value:", rooms, "type:", typeof rooms);
     return res.status(400).json({ error: "Недействительное количество комнат. Должно быть: 1, 2, 3, 4, 5+" });
   }
 
