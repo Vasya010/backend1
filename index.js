@@ -85,6 +85,7 @@ const upload = multer({
       console.error(`File ${file.originalname} rejected: Invalid MIME type ${file.mimetype}`);
       cb(new Error('Недопустимый формат файла. Разрешены только изображения (JPEG, PNG, GIF, BMP, TIFF, WebP, HEIC, HEIF, SVG, ICO, JP2, AVIF).'), false);
     }
+
   },
   limits: { fileSize: 100 * 1024 * 1024 }, // Лимит 100 МБ
 });
@@ -114,7 +115,7 @@ const authenticate = async (req, res, next) => {
     const decoded = jwt.verify(token, jwtSecret);
     const connection = await pool.getConnection();
     const [users] = await connection.execute(
-      "SELECT id, role, first_name, last_name FROM users1 WHERE id = ? AND token = ?",
+      "SELECT id, role, first_name, last_name, balance, email, phone FROM users1 WHERE id = ? AND token = ?",
       [decoded.id, token]
     );
     connection.release();
@@ -124,7 +125,35 @@ const authenticate = async (req, res, next) => {
       return res.status(401).json({ error: "Недействительный токен" });
     }
 
-    req.user = { ...decoded, first_name: users[0].first_name, last_name: users[0].last_name };
+    const [promotionOrderTables] = await connection.execute("SHOW TABLES LIKE 'promotion_orders'");
+    if (promotionOrderTables.length === 0) {
+      console.log("Creating promotion_orders table...");
+      await connection.execute(`
+        CREATE TABLE promotion_orders (
+          id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+          user_id INT UNSIGNED NOT NULL,
+          property_id VARCHAR(255) NOT NULL,
+          property_title VARCHAR(255) NOT NULL,
+          duration VARCHAR(100) NOT NULL,
+          placement VARCHAR(100) NOT NULL,
+          amount DECIMAL(12,2) NOT NULL,
+          payment_method VARCHAR(100) NOT NULL,
+          status VARCHAR(50) DEFAULT 'processing',
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          FOREIGN KEY (user_id) REFERENCES users1(id) ON DELETE CASCADE
+        ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+      `);
+    }
+
+    req.user = {
+      ...decoded,
+      first_name: users[0].first_name,
+      last_name: users[0].last_name,
+      balance: users[0].balance,
+      email: users[0].email,
+      phone: users[0].phone,
+    };
     next();
   } catch (error) {
     console.error("Authentication error:", {
@@ -134,6 +163,18 @@ const authenticate = async (req, res, next) => {
     res.status(401).json({ error: "Недействительный токен" });
   }
 };
+
+const buildUserResponse = (user) => ({
+  id: user.id,
+  first_name: user.first_name,
+  last_name: user.last_name,
+  email: user.email,
+  phone: user.phone,
+  role: user.role,
+  balance: user.balance !== undefined && user.balance !== null ? Number(user.balance) : 0,
+  name: `${user.first_name} ${user.last_name}`.trim(),
+  photoUrl: user.photoUrl || null,
+});
 
 // Database Connection Test and Setup
 async function testDatabaseConnection() {
@@ -156,9 +197,20 @@ async function testDatabaseConnection() {
           phone VARCHAR(255) NOT NULL,
           profile_picture VARCHAR(255) DEFAULT NULL,
           password VARCHAR(255) NOT NULL,
+          balance DECIMAL(12,2) NOT NULL DEFAULT 0,
           token TEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci DEFAULT NULL
         ) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci
       `);
+    } else {
+      const [balanceColumns] = await connection.execute(
+        "SHOW COLUMNS FROM users1 LIKE 'balance'"
+      );
+      if (balanceColumns.length === 0) {
+        console.log("Adding balance column to users1 table...");
+        await connection.execute(
+          "ALTER TABLE users1 ADD COLUMN balance DECIMAL(12,2) NOT NULL DEFAULT 0"
+        );
+      }
     }
 
     // Create properties table
@@ -312,6 +364,268 @@ testDatabaseConnection();
 // Test Endpoint
 app.get("/api/message", (req, res) => {
   res.json({ message: "Hello from Ala-Too backend!" });
+});
+
+app.post("/public/auth/register", async (req, res) => {
+  const { name, email, password, phone } = req.body || {};
+
+  if (!name || !email || !password) {
+    return res.status(400).json({ error: "Имя, email и пароль обязательны" });
+  }
+
+  if (password.length < 6) {
+    return res.status(400).json({ error: "Пароль должен быть не менее 6 символов" });
+  }
+
+  const [firstNameRaw, ...restName] = name.trim().split(/\s+/);
+  const first_name = firstNameRaw || "User";
+  const last_name = restName.join(" ");
+  const normalizedPhone = phone && phone.trim() ? phone.trim() : "Не указан";
+  const initialBalance = Number(process.env.INITIAL_USER_BALANCE || 10000);
+
+  let connection;
+  try {
+    connection = await pool.getConnection();
+    const [existingUser] = await connection.execute("SELECT id FROM users1 WHERE email = ?", [email]);
+    if (existingUser.length > 0) {
+      return res.status(409).json({ error: "Пользователь с таким email уже существует" });
+    }
+
+    const hashedPassword = await bcrypt.hash(password, 10);
+    const [result] = await connection.execute(
+      "INSERT INTO users1 (first_name, last_name, email, phone, role, password, balance) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      [first_name, last_name, email, normalizedPhone, "USER", hashedPassword, initialBalance]
+    );
+
+    const userId = result.insertId;
+    const token = jwt.sign({ id: userId, role: "USER" }, jwtSecret, { expiresIn: "30d" });
+    await connection.execute("UPDATE users1 SET token = ? WHERE id = ?", [token, userId]);
+
+    const user = buildUserResponse({
+      id: userId,
+      first_name,
+      last_name,
+      email,
+      phone: normalizedPhone,
+      role: "USER",
+      balance: initialBalance,
+    });
+
+    res.status(201).json({
+      message: "Регистрация успешна",
+      token,
+      user,
+    });
+  } catch (error) {
+    console.error("Registration error:", {
+      message: error.message,
+      stack: error.stack,
+    });
+    res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
+app.post("/public/auth/login", async (req, res) => {
+  const { email, password } = req.body || {};
+  if (!email || !password) {
+    return res.status(400).json({ error: "Email и пароль обязательны" });
+  }
+
+  let connection;
+  try {
+    connection = await pool.getConnection();
+    const [rows] = await connection.execute(
+      "SELECT id, first_name, last_name, email, phone, role, password, balance, profile_picture AS photoUrl FROM users1 WHERE email = ?",
+      [email]
+    );
+
+    if (rows.length === 0) {
+      return res.status(401).json({ error: "Недействительный email или пользователь не найден" });
+    }
+
+    const userRecord = rows[0];
+    const isPasswordValid = await bcrypt.compare(password, userRecord.password);
+    if (!isPasswordValid) {
+      return res.status(401).json({ error: "Недействительный пароль" });
+    }
+
+    const token = jwt.sign({ id: userRecord.id, role: userRecord.role }, jwtSecret, { expiresIn: "30d" });
+    await connection.execute("UPDATE users1 SET token = ? WHERE id = ?", [token, userRecord.id]);
+
+    const user = buildUserResponse(userRecord);
+    res.json({ message: "Авторизация успешна", token, user });
+  } catch (error) {
+    console.error("Public login error:", {
+      message: error.message,
+      stack: error.stack,
+    });
+    res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
+app.post("/public/auth/logout", authenticate, async (req, res) => {
+  let connection;
+  try {
+    connection = await pool.getConnection();
+    await connection.execute("UPDATE users1 SET token = NULL WHERE id = ?", [req.user.id]);
+    res.json({ message: "Выход выполнен" });
+  } catch (error) {
+    console.error("Public logout error:", {
+      message: error.message,
+      stack: error.stack,
+    });
+    res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
+app.get("/public/auth/profile", authenticate, async (req, res) => {
+  let connection;
+  try {
+    connection = await pool.getConnection();
+    const [rows] = await connection.execute(
+      "SELECT id, first_name, last_name, email, phone, role, balance, profile_picture AS photoUrl FROM users1 WHERE id = ?",
+      [req.user.id]
+    );
+    if (rows.length === 0) {
+      return res.status(404).json({ error: "Пользователь не найден" });
+    }
+
+    const user = buildUserResponse(rows[0]);
+    res.json({ user });
+  } catch (error) {
+    console.error("Profile fetch error:", {
+      message: error.message,
+      stack: error.stack,
+    });
+    res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
+app.post("/public/payments", authenticate, async (req, res) => {
+  const {
+    propertyId,
+    propertyTitle,
+    amount,
+    duration,
+    placement,
+    paymentMethod = "QR",
+  } = req.body || {};
+
+  if (!propertyId || !propertyTitle || !amount || !duration || !placement) {
+    return res.status(400).json({ error: "propertyId, propertyTitle, amount, duration и placement обязательны" });
+  }
+
+  const normalizedAmount = parseFloat(amount);
+  if (isNaN(normalizedAmount) || normalizedAmount <= 0) {
+    return res.status(400).json({ error: "Сумма должна быть положительным числом" });
+  }
+
+  let connection;
+  try {
+    connection = await pool.getConnection();
+    await connection.beginTransaction();
+
+    const [userRows] = await connection.execute(
+      "SELECT balance FROM users1 WHERE id = ? FOR UPDATE",
+      [req.user.id]
+    );
+    if (userRows.length === 0) {
+      await connection.rollback();
+      return res.status(404).json({ error: "Пользователь не найден" });
+    }
+
+    const currentBalance = parseFloat(userRows[0].balance || 0);
+    if (currentBalance < normalizedAmount) {
+      await connection.rollback();
+      return res.status(400).json({ error: "Недостаточно средств на балансе" });
+    }
+
+    const newBalance = currentBalance - normalizedAmount;
+    await connection.execute(
+      "UPDATE users1 SET balance = ? WHERE id = ?",
+      [newBalance, req.user.id]
+    );
+
+    const [result] = await connection.execute(
+      `INSERT INTO promotion_orders
+        (user_id, property_id, property_title, duration, placement, amount, payment_method, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        req.user.id,
+        propertyId,
+        propertyTitle,
+        duration,
+        placement,
+        normalizedAmount,
+        paymentMethod,
+        "processing",
+      ]
+    );
+
+    await connection.commit();
+
+    res.status(201).json({
+      message: "Оплата успешно зарегистрирована",
+      order: {
+        id: result.insertId,
+        property_id: propertyId,
+        property_title: propertyTitle,
+        duration,
+        placement,
+        amount: normalizedAmount,
+        payment_method: paymentMethod,
+        status: "processing",
+      },
+      balance: newBalance,
+    });
+  } catch (error) {
+    if (connection) {
+      try {
+        await connection.rollback();
+      } catch (rollbackError) {
+        console.error("Rollback error after payment failure:", rollbackError.message);
+      }
+    }
+    console.error("Payment creation error:", {
+      message: error.message,
+      stack: error.stack,
+    });
+    res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
+app.get("/public/payments", authenticate, async (req, res) => {
+  let connection;
+  try {
+    connection = await pool.getConnection();
+    const [rows] = await connection.execute(
+      `SELECT id, property_id, property_title, duration, placement, amount, payment_method, status, created_at
+       FROM promotion_orders
+       WHERE user_id = ?
+       ORDER BY created_at DESC`,
+      [req.user.id]
+    );
+
+    res.json(rows);
+  } catch (error) {
+    console.error("Fetch payments error:", {
+      message: error.message,
+      stack: error.stack,
+    });
+    res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
+  }
 });
 
 // Admin Login Endpoint
