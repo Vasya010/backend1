@@ -2105,12 +2105,14 @@ app.get("/public/user/properties", authenticate, async (req, res) => {
     
     const [rows] = await connection.execute(
       `SELECT id, title, type_id, price, mkv, rooms, address, description, status, photos, 
-              owner_name, owner_phone, phone, created_at, updated_at
+              owner_name, owner_phone, phone, unit, created_at, updated_at
        FROM properties 
        WHERE owner_id = ?
        ORDER BY created_at DESC`,
       [req.user.id]
     );
+
+    console.log(`Fetching properties for user ${req.user.id}, found ${rows.length} properties`);
 
     const properties = rows.map(row => {
       let parsedPhotos = [];
@@ -2123,7 +2125,16 @@ app.get("/public/user/properties", authenticate, async (req, res) => {
         }
       }
 
-      return {
+      // Маппим unit (deal_type) в понятное значение
+      let dealType = 'Продажа';
+      if (row.unit) {
+        const unitLower = row.unit.toString().toLowerCase();
+        if (unitLower.includes('аренд') || unitLower === 'rent') {
+          dealType = 'Аренда';
+        }
+      }
+
+      const property = {
         id: row.id,
         title: row.title || null,
         category: row.type_id || null,
@@ -2133,13 +2144,18 @@ app.get("/public/user/properties", authenticate, async (req, res) => {
         location: row.address || null,
         phone: row.owner_phone || row.phone || null,
         description: row.description || null,
-        status: row.status || null,
+        status: row.status || null, // Возвращаем статус как есть из базы данных
+        deal_type: dealType,
         photos: parsedPhotos.map(img => `https://s3.twcstorage.ru/${bucketName}/${img}`),
         createdAt: row.created_at ? new Date(row.created_at).toIso8601String() : null,
         updatedAt: row.updated_at ? new Date(row.updated_at).toIso8601String() : null,
       };
+
+      console.log(`Property ID ${row.id}: status="${row.status}", title="${row.title}"`);
+      return property;
     });
 
+    console.log(`Returning ${properties.length} properties to user`);
     res.json(properties);
   } catch (error) {
     console.error("Error fetching user properties:", {
