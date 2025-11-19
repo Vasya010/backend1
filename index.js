@@ -2168,6 +2168,97 @@ app.get("/public/user/properties", authenticate, async (req, res) => {
   }
 });
 
+// Delete user's own property (authenticated)
+app.delete("/public/user/properties/:id", authenticate, async (req, res) => {
+  const { id } = req.params;
+
+  if (!id || isNaN(parseInt(id))) {
+    return res.status(400).json({ error: "ID объекта должен быть числом" });
+  }
+
+  let connection;
+  try {
+    connection = await pool.getConnection();
+
+    // Проверяем, что объявление существует и принадлежит пользователю
+    const [properties] = await connection.execute(
+      "SELECT id, owner_id, photos, document FROM properties WHERE id = ?",
+      [parseInt(id)]
+    );
+
+    if (properties.length === 0) {
+      return res.status(404).json({ error: "Объявление не найдено" });
+    }
+
+    const property = properties[0];
+
+    // Проверяем, что объявление принадлежит текущему пользователю
+    if (property.owner_id !== req.user.id) {
+      return res.status(403).json({ error: "У вас нет прав на удаление этого объявления" });
+    }
+
+    // Удаляем фотографии из S3
+    let photoFiles = [];
+    if (property.photos) {
+      try {
+        photoFiles = JSON.parse(property.photos) || [];
+      } catch (error) {
+        console.warn(`Error parsing photos for property ID ${id}:`, error.message);
+        photoFiles = [];
+      }
+    }
+
+    // Удаляем фотографии из S3
+    for (const photoKey of photoFiles) {
+      try {
+        await s3Client.send(new DeleteObjectCommand({
+          Bucket: bucketName,
+          Key: photoKey,
+        }));
+        console.log(`Deleted photo from S3: ${photoKey}`);
+      } catch (error) {
+        console.error(`Error deleting photo ${photoKey} from S3:`, error.message);
+        // Продолжаем удаление даже если фото не удалось удалить из S3
+      }
+    }
+
+    // Удаляем документ из S3, если есть
+    if (property.document) {
+      try {
+        await s3Client.send(new DeleteObjectCommand({
+          Bucket: bucketName,
+          Key: property.document,
+        }));
+        console.log(`Deleted document from S3: ${property.document}`);
+      } catch (error) {
+        console.error(`Error deleting document ${property.document} from S3:`, error.message);
+        // Продолжаем удаление даже если документ не удалось удалить из S3
+      }
+    }
+
+    // Удаляем объявление из базы данных
+    await connection.execute(
+      "DELETE FROM properties WHERE id = ?",
+      [parseInt(id)]
+    );
+
+    console.log(`Property ID ${id} deleted by user ${req.user.id}`);
+
+    res.json({
+      message: "Объявление успешно удалено",
+      id: parseInt(id),
+    });
+  } catch (error) {
+    console.error("Error deleting user property:", {
+      message: error.message,
+      stack: error.stack,
+    });
+    res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
 // Update Property (Protected, SUPER_ADMIN or REALTOR)
 app.put("/api/properties/:id", authenticate, upload.fields([
   { name: "photos", maxCount: 10 },
