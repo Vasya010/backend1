@@ -115,7 +115,7 @@ const authenticate = async (req, res, next) => {
     const decoded = jwt.verify(token, jwtSecret);
     const connection = await pool.getConnection();
     const [users] = await connection.execute(
-      "SELECT id, role, first_name, last_name, balance, email, phone FROM users1 WHERE id = ? AND token = ?",
+      "SELECT id, role, first_name, last_name, balance, email, phone, created_at FROM users1 WHERE id = ? AND token = ?",
       [decoded.id, token]
     );
     connection.release();
@@ -153,6 +153,7 @@ const authenticate = async (req, res, next) => {
       balance: users[0].balance,
       email: users[0].email,
       phone: users[0].phone,
+      created_at: users[0].created_at,
     };
     next();
   } catch (error) {
@@ -174,6 +175,9 @@ const buildUserResponse = (user) => ({
   balance: user.balance !== undefined && user.balance !== null ? Number(user.balance) : 0,
   name: `${user.first_name} ${user.last_name}`.trim(),
   photoUrl: user.photoUrl || null,
+  created_at: user.created_at
+    ? new Date(user.created_at).toISOString()
+    : null,
 });
 
 // Database Connection Test and Setup
@@ -198,7 +202,8 @@ async function testDatabaseConnection() {
           profile_picture VARCHAR(255) DEFAULT NULL,
           password VARCHAR(255) NOT NULL,
           balance DECIMAL(12,2) NOT NULL DEFAULT 0,
-          token TEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci DEFAULT NULL
+          token TEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci DEFAULT NULL,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         ) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci
       `);
     } else {
@@ -209,6 +214,16 @@ async function testDatabaseConnection() {
         console.log("Adding balance column to users1 table...");
         await connection.execute(
           "ALTER TABLE users1 ADD COLUMN balance DECIMAL(12,2) NOT NULL DEFAULT 0"
+        );
+      }
+
+      const [createdAtColumns] = await connection.execute(
+        "SHOW COLUMNS FROM users1 LIKE 'created_at'"
+      );
+      if (createdAtColumns.length === 0) {
+        console.log("Adding created_at column to users1 table...");
+        await connection.execute(
+          "ALTER TABLE users1 ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP"
         );
       }
     }
@@ -381,7 +396,7 @@ app.post("/public/auth/register", async (req, res) => {
   const first_name = firstNameRaw || "User";
   const last_name = restName.join(" ");
   const normalizedPhone = phone && phone.trim() ? phone.trim() : "Не указан";
-  const initialBalance = Number(process.env.INITIAL_USER_BALANCE || 10000);
+    const initialBalance = Number(process.env.INITIAL_USER_BALANCE ?? 0);
 
   let connection;
   try {
@@ -398,6 +413,10 @@ app.post("/public/auth/register", async (req, res) => {
     );
 
     const userId = result.insertId;
+    const [[createdRow]] = await connection.execute(
+      "SELECT created_at FROM users1 WHERE id = ?",
+      [userId]
+    );
     const token = jwt.sign({ id: userId, role: "USER" }, jwtSecret, { expiresIn: "30d" });
     await connection.execute("UPDATE users1 SET token = ? WHERE id = ?", [token, userId]);
 
@@ -409,6 +428,7 @@ app.post("/public/auth/register", async (req, res) => {
       phone: normalizedPhone,
       role: "USER",
       balance: initialBalance,
+      created_at: createdRow?.created_at || new Date(),
     });
 
     res.status(201).json({
@@ -437,7 +457,7 @@ app.post("/public/auth/login", async (req, res) => {
   try {
     connection = await pool.getConnection();
     const [rows] = await connection.execute(
-      "SELECT id, first_name, last_name, email, phone, role, password, balance, profile_picture AS photoUrl FROM users1 WHERE email = ?",
+      "SELECT id, first_name, last_name, email, phone, role, password, balance, profile_picture AS photoUrl, created_at FROM users1 WHERE email = ?",
       [email]
     );
 
