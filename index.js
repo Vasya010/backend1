@@ -3079,7 +3079,7 @@ app.get("/public/properties", async (req, res) => {
     parsedPhotos = [];
   }
 
-      const contactPhone = row.owner_phone || row.phone || null;
+      const finalContactPhone = row.owner_phone || row.phone || null;
 
       return {
         id: row.id,
@@ -3100,7 +3100,7 @@ app.get("/public/properties", async (req, res) => {
         owner_phone: row.owner_phone || null,
         owner_name: row.owner_name || null,
         curator_id: row.curator_id || null,
-        contact_phone: contactPhone,
+        contact_phone: finalContactPhone,
         photos: parsedPhotos.map(
           img => `https://s3.twcstorage.ru/${bucketName}/${img}`
         )
