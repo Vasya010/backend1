@@ -2029,9 +2029,16 @@ app.post("/public/user/properties", authenticate, upload.array("photos", MAX_USE
       title: cleanTitle,
       type_id: cleanCategory,
       owner_name: ownerName,
+      owner_phone: contactPhone,
       price: parsedPrice,
       area: parsedArea,
+      rooms: cleanRooms,
+      phone: contactPhone,
+      address: cleanLocation,
+      description: cleanDescription,
+      deal_type: cleanDealType,
       photos_count: filenames.length,
+      owner_id: req.user.id,
     });
     
     const [result] = await connection.execute(
@@ -2042,6 +2049,13 @@ app.post("/public/user/properties", authenticate, upload.array("photos", MAX_USE
     );
 
     console.log("Property created successfully with ID:", result.insertId);
+    
+    // Проверяем, что данные действительно сохранились
+    const [savedProperty] = await connection.execute(
+      "SELECT id, title, type_id, price, mkv, rooms, address, description, photos, status FROM properties WHERE id = ?",
+      [result.insertId]
+    );
+    console.log("Verified saved property:", savedProperty[0]);
 
     res.status(201).json({
       id: result.insertId,
