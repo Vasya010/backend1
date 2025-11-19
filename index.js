@@ -2097,6 +2097,61 @@ app.post("/public/user/properties", authenticate, upload.array("photos", MAX_USE
   }
 });
 
+// Get user's own properties (authenticated)
+app.get("/public/user/properties", authenticate, async (req, res) => {
+  let connection;
+  try {
+    connection = await pool.getConnection();
+    
+    const [rows] = await connection.execute(
+      `SELECT id, title, type_id, price, mkv, rooms, address, description, status, photos, 
+              owner_name, owner_phone, phone, created_at, updated_at
+       FROM properties 
+       WHERE owner_id = ?
+       ORDER BY created_at DESC`,
+      [req.user.id]
+    );
+
+    const properties = rows.map(row => {
+      let parsedPhotos = [];
+      if (row.photos) {
+        try {
+          parsedPhotos = JSON.parse(row.photos) || [];
+        } catch (error) {
+          console.warn(`Error parsing photos for property ID ${row.id}:`, error.message);
+          parsedPhotos = [];
+        }
+      }
+
+      return {
+        id: row.id,
+        title: row.title || null,
+        category: row.type_id || null,
+        price: row.price ? parseFloat(row.price) : null,
+        area: row.mkv ? parseFloat(row.mkv) : null,
+        rooms: row.rooms || null,
+        location: row.address || null,
+        phone: row.owner_phone || row.phone || null,
+        description: row.description || null,
+        status: row.status || null,
+        photos: parsedPhotos.map(img => `https://s3.twcstorage.ru/${bucketName}/${img}`),
+        createdAt: row.created_at ? new Date(row.created_at).toIso8601String() : null,
+        updatedAt: row.updated_at ? new Date(row.updated_at).toIso8601String() : null,
+      };
+    });
+
+    res.json(properties);
+  } catch (error) {
+    console.error("Error fetching user properties:", {
+      message: error.message,
+      stack: error.stack,
+    });
+    res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
 // Update Property (Protected, SUPER_ADMIN or REALTOR)
 app.put("/api/properties/:id", authenticate, upload.fields([
   { name: "photos", maxCount: 10 },
