@@ -90,6 +90,8 @@ const upload = multer({
   limits: { fileSize: 100 * 1024 * 1024 }, // Лимит 100 МБ
 });
 
+const MAX_USER_PROPERTY_PHOTOS = 3;
+
 // MySQL Connection Pool
 const dbConfig = {
   host: process.env.DB_HOST || "vh452.timeweb.ru",
@@ -294,6 +296,16 @@ async function testDatabaseConnection() {
         console.log("Renaming column 'room' to 'rooms'...");
         await connection.execute("ALTER TABLE properties CHANGE COLUMN `room` `rooms` VARCHAR(10) DEFAULT NULL");
       }
+
+      const [titleColumns] = await connection.execute(
+        "SHOW COLUMNS FROM properties LIKE 'title'"
+      );
+      if (titleColumns.length === 0) {
+        console.log("Adding title column to properties table...");
+        await connection.execute(
+          "ALTER TABLE properties ADD COLUMN title VARCHAR(255) DEFAULT NULL AFTER owner_phone"
+        );
+      }
     }
 
     // Create jk table
@@ -396,7 +408,7 @@ app.post("/public/auth/register", async (req, res) => {
   const first_name = firstNameRaw || "User";
   const last_name = restName.join(" ");
   const normalizedPhone = phone && phone.trim() ? phone.trim() : "Не указан";
-    const initialBalance = Number(process.env.INITIAL_USER_BALANCE ?? 0);
+    const initialBalance = Number(process.env.INITIAL_USER_BALANCE ?? 500);
 
   let connection;
   try {
@@ -1443,6 +1455,7 @@ app.post("/api/properties", authenticate, upload.fields([
   }
 
   const {
+    title,
     type_id,
     repair,
     series,
@@ -1587,9 +1600,9 @@ app.post("/api/properties", authenticate, upload.fields([
     const photosJson = photos.length > 0 ? JSON.stringify(photos.map(img => img.filename)) : null;
     const [result] = await connection.execute(
       `INSERT INTO properties (
-        type_id, repair, series, zhk_id, document_id, owner_name, owner_phone, curator_id, price, unit, rukprice, mkv, rooms, phone, 
+        type_id, repair, series, zhk_id, document_id, owner_name, owner_phone, title, curator_id, price, unit, rukprice, mkv, rooms, phone, 
         district_id, subdistrict_id, address, notes, description, photos, document, status, owner_id, etaj, etajnost
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         type_id || null,
         repair || null,
@@ -1598,6 +1611,7 @@ app.post("/api/properties", authenticate, upload.fields([
         0,
         owner_name || null,
         owner_phone || null,
+        title || null,
         finalCuratorId,
         price,
         unit || null,
@@ -1625,6 +1639,7 @@ app.post("/api/properties", authenticate, upload.fields([
       repair,
       series,
       zhk_id,
+      title: title || null,
       document_id: 0,
       owner_name,
       owner_phone,
@@ -1663,6 +1678,103 @@ app.post("/api/properties", authenticate, upload.fields([
   }
 });
 
+// Public endpoint for regular users to create listings
+app.post("/public/user/properties", authenticate, upload.array("photos", MAX_USER_PROPERTY_PHOTOS), async (req, res) => {
+  const {
+    category,
+    deal_type,
+    title,
+    description,
+    price,
+    area,
+    rooms,
+    location,
+    phone,
+  } = req.body || {};
+
+  const cleanCategory = category?.trim();
+  const cleanDealType = deal_type?.trim();
+  const cleanTitle = title?.trim();
+  const cleanDescription = description?.trim();
+  const cleanRooms = rooms?.trim();
+  const cleanLocation = location?.trim();
+  const cleanPhone = phone?.trim();
+
+  if (!cleanCategory || !cleanDealType || !cleanTitle || !cleanDescription || !price || !area || !cleanRooms || !cleanLocation || !cleanPhone) {
+    return res.status(400).json({ error: "Заполните обязательные поля: категория, тип сделки, название, описание, цена, площадь, комнаты, адрес и телефон." });
+  }
+
+  const parsedPrice = parseFloat(price.toString().replace(/\s|,/g, ""));
+  const parsedArea = parseFloat(area.toString().replace(/\s|,/g, ""));
+  if (isNaN(parsedPrice) || isNaN(parsedArea)) {
+    return res.status(400).json({ error: "Цена и площадь должны быть числом." });
+  }
+
+  const uploadedPhotos = req.files || [];
+  if (!uploadedPhotos.length) {
+    return res.status(400).json({ error: "Добавьте хотя бы одно фото." });
+  }
+  if (uploadedPhotos.length > MAX_USER_PROPERTY_PHOTOS) {
+    return res.status(400).json({ error: `Можно загрузить максимум ${MAX_USER_PROPERTY_PHOTOS} фото.` });
+  }
+
+  let connection;
+  try {
+    connection = await pool.getConnection();
+
+    const filenames = [];
+    for (const photo of uploadedPhotos) {
+      const key = `${Date.now()}-${Math.round(Math.random() * 1e9)}${path.extname(photo.originalname)}`;
+      await s3Client.send(new PutObjectCommand({
+        Bucket: bucketName,
+        Key: key,
+        Body: photo.buffer,
+        ContentType: photo.mimetype,
+      }));
+      filenames.push(key);
+    }
+
+    const ownerName = `${req.user.first_name || ""} ${req.user.last_name || ""}`.trim() || null;
+    const contactPhone = cleanPhone;
+
+    const [result] = await connection.execute(
+      `INSERT INTO properties (
+        title, type_id, owner_name, owner_phone, price, mkv, rooms, phone, address, description, photos, status, owner_id, unit, etaj, etajnost, notes
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending_review', ?, ?, ?, ?, ?)`,
+      [
+        cleanTitle,
+        cleanCategory,
+        ownerName,
+        contactPhone,
+        parsedPrice,
+        parsedArea,
+        cleanRooms,
+        contactPhone,
+        cleanLocation,
+        cleanDescription,
+        JSON.stringify(filenames),
+        req.user.id,
+        cleanDealType,
+        1,
+        1,
+        "Создано пользователем через приложение",
+      ]
+    );
+
+    res.status(201).json({
+      id: result.insertId,
+      status: "pending_review",
+      message: "Объявление отправлено на модерацию",
+      photos: filenames.map((img) => `https://s3.twcstorage.ru/${bucketName}/${img}`),
+    });
+  } catch (error) {
+    console.error("Error creating public property:", error);
+    res.status(500).json({ error: `Не удалось сохранить объявление: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
 // Update Property (Protected, SUPER_ADMIN or REALTOR)
 app.put("/api/properties/:id", authenticate, upload.fields([
   { name: "photos", maxCount: 10 },
@@ -1674,6 +1786,7 @@ app.put("/api/properties/:id", authenticate, upload.fields([
 
   const { id } = req.params;
   const {
+    title,
     type_id,
     repair,
     series,
@@ -1876,7 +1989,7 @@ app.put("/api/properties/:id", authenticate, upload.fields([
 
     await connection.execute(
       `UPDATE properties SET
-        type_id = ?, repair = ?, series = ?, zhk_id = ?, document_id = ?, owner_name = ?, owner_phone = ?, curator_id = ?, price = ?, unit = ?, rukprice = ?, mkv = ?, rooms = ?, phone = ?,
+        type_id = ?, repair = ?, series = ?, zhk_id = ?, document_id = ?, owner_name = ?, owner_phone = ?, title = ?, curator_id = ?, price = ?, unit = ?, rukprice = ?, mkv = ?, rooms = ?, phone = ?,
         district_id = ?, subdistrict_id = ?, address = ?, notes = ?, description = ?, photos = ?, document = ?, status = ?, owner_id = ?, etaj = ?, etajnost = ?
         WHERE id = ?`,
       [
@@ -1887,6 +2000,7 @@ app.put("/api/properties/:id", authenticate, upload.fields([
         0,
         owner_name || null,
         owner_phone || null,
+        title || null,
         finalCuratorId,
         price,
         unit || null,
@@ -1915,6 +2029,7 @@ app.put("/api/properties/:id", authenticate, upload.fields([
       repair,
       series,
       zhk_id,
+      title: title || null,
       document_id: 0,
       owner_name,
       owner_phone,
@@ -2068,11 +2183,12 @@ app.get("/api/listings", authenticate, async (req, res) => {
   try {
     connection = await pool.getConnection();
     const [rows] = await connection.execute(
-      "SELECT id, type_id, price, rukprice, mkv, status, address, created_at FROM properties"
+      "SELECT id, title, type_id, price, rukprice, mkv, status, address, created_at FROM properties"
     );
 
     const listings = rows.map(row => ({
       id: row.id,
+      title: row.title || null,
       date: new Date(row.created_at).toLocaleDateString("ru-RU"),
       time: new Date(row.created_at).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" }),
       area: row.mkv,
@@ -2111,7 +2227,7 @@ app.get("/public/properties/:id", async (req, res) => {
     const [rows] = await connection.execute(
       `SELECT id, type_id, repair, series, zhk_id, price, mkv, rooms, district_id, subdistrict_id, 
               address, description, notes, status, etaj, etajnost, photos, document, owner_name, 
-              owner_phone, curator_id, phone, owner_id, latitude, longitude, created_at
+              owner_phone, title, curator_id, phone, owner_id, latitude, longitude, created_at
        FROM properties WHERE id = ?`,
       [parseInt(id)]
     );
@@ -2153,6 +2269,7 @@ app.get("/public/properties/:id", async (req, res) => {
       document: row.document ? `https://s3.twcstorage.ru/${bucketName}/${row.document}` : null,
       owner_name: row.owner_name || null,
       owner_phone: row.owner_phone || null,
+      title: row.title || null,
       curator_id: row.curator_id || null,
       contact_phone: finalContactPhone,
       phone: row.phone || null,
@@ -2952,6 +3069,7 @@ app.get("/public/properties", async (req, res) => {
                  photos,
                  owner_phone,
                  owner_name,
+                 title,
                  curator_id,
                  phone
                FROM properties
@@ -3099,6 +3217,7 @@ app.get("/public/properties", async (req, res) => {
         etajnost: row.etajnost || null,
         owner_phone: row.owner_phone || null,
         owner_name: row.owner_name || null,
+        title: row.title || null,
         curator_id: row.curator_id || null,
         contact_phone: finalContactPhone,
         photos: parsedPhotos.map(
