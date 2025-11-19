@@ -1760,6 +1760,63 @@ app.post("/api/properties", authenticate, upload.fields([
   }
 });
 
+// Public endpoint for users to submit their property for review
+app.patch("/public/user/properties/:id/submit", authenticate, async (req, res) => {
+  const { id } = req.params;
+
+  if (!id || isNaN(parseInt(id))) {
+    return res.status(400).json({ error: "ID объекта должен быть числом" });
+  }
+
+  let connection;
+  try {
+    connection = await pool.getConnection();
+
+    // Проверяем, что объявление существует и принадлежит пользователю
+    const [properties] = await connection.execute(
+      "SELECT id, owner_id, status, title FROM properties WHERE id = ?",
+      [parseInt(id)]
+    );
+
+    if (properties.length === 0) {
+      return res.status(404).json({ error: "Объявление не найдено" });
+    }
+
+    const property = properties[0];
+
+    // Проверяем, что объявление принадлежит текущему пользователю
+    if (property.owner_id !== req.user.id) {
+      return res.status(403).json({ error: "У вас нет прав на отправку этого объявления на проверку" });
+    }
+
+    // Проверяем, что объявление еще не опубликовано
+    if (property.status === "Актуально" || property.status === "active") {
+      return res.status(400).json({ error: "Объявление уже опубликовано" });
+    }
+
+    // Обновляем статус на pending_review
+    await connection.execute(
+      "UPDATE properties SET status = 'pending_review', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+      [parseInt(id)]
+    );
+
+    res.json({
+      id: parseInt(id),
+      status: "pending_review",
+      message: "Объявление отправлено на модерацию",
+      title: property.title,
+    });
+  } catch (error) {
+    console.error("Error submitting property for review:", {
+      message: error.message,
+      stack: error.stack,
+    });
+    res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
 // Public endpoint for regular users to create listings
 app.post("/public/user/properties", authenticate, upload.array("photos", MAX_USER_PROPERTY_PHOTOS), async (req, res) => {
   const {
