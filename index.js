@@ -648,6 +648,46 @@ app.get("/public/payments", authenticate, async (req, res) => {
   }
 });
 
+app.patch("/public/payments/:id", authenticate, async (req, res) => {
+  const { id } = req.params;
+  const { status } = req.body || {};
+
+  const allowedStatuses = ["processing", "active", "completed", "rejected"];
+  if (!status || !allowedStatuses.includes(status)) {
+    return res.status(400).json({ error: "Некорректный статус" });
+  }
+
+  let connection;
+  try {
+    connection = await pool.getConnection();
+    const [orders] = await connection.execute(
+      "SELECT user_id FROM promotion_orders WHERE id = ?",
+      [id]
+    );
+    if (orders.length === 0) {
+      return res.status(404).json({ error: "Заявка не найдена" });
+    }
+    if (orders[0].user_id !== req.user.id) {
+      return res.status(403).json({ error: "Нет прав на изменение этой заявки" });
+    }
+
+    await connection.execute(
+      "UPDATE promotion_orders SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+      [status, id]
+    );
+
+    res.json({ message: "Статус обновлён" });
+  } catch (error) {
+    console.error("Ошибка при обновлении статуса заявки:", {
+      message: error.message,
+      stack: error.stack,
+    });
+    res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
 // Admin Login Endpoint
 app.post("/api/admin/login", async (req, res) => {
   const { email, password } = req.body;
