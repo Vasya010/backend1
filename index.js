@@ -2674,7 +2674,9 @@ app.get("/aipublic/properties", async (req, res) => {
   let connection;
   let query = `SELECT id, type_id, repair, series, zhk_id, price, mkv, rooms, district_id, subdistrict_id,
                       address, description, status, etaj, etajnost, photos
-               FROM properties WHERE 1=1`;
+               FROM properties 
+               WHERE 1=1
+               AND (status = 'Актуально' OR status = 'active' OR status IS NULL)`;
   let params = [];
 
   try {
@@ -3430,7 +3432,8 @@ app.get("/public/properties", async (req, res) => {
                  curator_id,
                  phone
                FROM properties
-               WHERE 1=1`;
+               WHERE 1=1
+               AND (status = 'Актуально' OR status = 'active' OR status IS NULL)`;
   let params = [];
 
   try {
