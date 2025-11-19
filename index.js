@@ -2676,7 +2676,7 @@ app.get("/aipublic/properties", async (req, res) => {
                       address, description, status, etaj, etajnost, photos
                FROM properties 
                WHERE 1=1
-               AND (status = 'Актуально' OR status = 'active' OR status IS NULL)`;
+               AND (status IS NULL OR status != 'pending_review')`;
   let params = [];
 
   try {
@@ -3433,7 +3433,7 @@ app.get("/public/properties", async (req, res) => {
                  phone
                FROM properties
                WHERE 1=1
-               AND (status = 'Актуально' OR status = 'active' OR status IS NULL)`;
+               AND (status IS NULL OR status != 'pending_review')`;
   let params = [];
 
   try {
