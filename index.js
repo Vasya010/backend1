@@ -78,14 +78,29 @@ const upload = multer({
       'image/avif'           // .avif
     ];
 
+    // Разрешенные расширения файлов изображений
+    const allowedExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.tif', '.webp', '.heic', '.heif', '.svg', '.ico', '.jp2', '.avif'];
+
+    // Проверяем MIME тип
     if (allowedImageTypes.includes(file.mimetype)) {
-      console.log(`File ${file.originalname} accepted for upload`);
+      console.log(`File ${file.originalname} accepted for upload (MIME: ${file.mimetype})`);
       cb(null, true);
-    } else {
-      console.error(`File ${file.originalname} rejected: Invalid MIME type ${file.mimetype}`);
-      cb(new Error('Недопустимый формат файла. Разрешены только изображения (JPEG, PNG, GIF, BMP, TIFF, WebP, HEIC, HEIF, SVG, ICO, JP2, AVIF).'), false);
+      return;
     }
 
+    // Если MIME тип не распознан (например, application/octet-stream), проверяем расширение файла
+    if (file.mimetype === 'application/octet-stream' || !file.mimetype) {
+      const fileExtension = path.extname(file.originalname).toLowerCase();
+      if (allowedExtensions.includes(fileExtension)) {
+        console.log(`File ${file.originalname} accepted for upload (by extension: ${fileExtension}, MIME: ${file.mimetype})`);
+        cb(null, true);
+        return;
+      }
+    }
+
+    // Файл не прошел проверку
+    console.error(`File ${file.originalname} rejected: Invalid MIME type ${file.mimetype}`);
+    cb(new Error('Недопустимый формат файла. Разрешены только изображения (JPEG, PNG, GIF, BMP, TIFF, WebP, HEIC, HEIF, SVG, ICO, JP2, AVIF).'), false);
   },
   limits: { fileSize: 100 * 1024 * 1024 }, // Лимит 100 МБ
 });
