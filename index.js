@@ -2157,7 +2157,7 @@ app.get("/public/properties/:id", async (req, res) => {
       parsedPhotos = [];
     }
 
-    const finalContactPhone = row.curator_phone || row.owner_phone || row.phone || null;
+      const finalContactPhone = row.owner_phone || row.phone || null;
 
     const property = {
       id: row.id,
@@ -2963,29 +2963,27 @@ app.get("/public/properties", async (req, res) => {
 
   let connection;
   let query = `SELECT 
-                 p.id,
-                 p.type_id,
-                 p.repair,
-                 p.series,
-                 p.zhk_id,
-                 p.price,
-                 p.mkv,
-                 p.rooms,
-                 p.district_id,
-                 p.subdistrict_id,
-                 p.address,
-                 p.description,
-                 p.status,
-                 p.etaj,
-                 p.etajnost,
-                 p.photos,
-                 p.owner_phone,
-                 p.owner_name,
-                 p.curator_id,
-                 CONCAT(u.first_name, ' ', u.last_name) AS curator_name,
-                 u.phone AS curator_phone
-               FROM properties p
-               LEFT JOIN users1 u ON p.curator_id = u.id
+                 id,
+                 type_id,
+                 repair,
+                 series,
+                 zhk_id,
+                 price,
+                 mkv,
+                 rooms,
+                 district_id,
+                 subdistrict_id,
+                 address,
+                 description,
+                 status,
+                 etaj,
+                 etajnost,
+                 photos,
+                 owner_phone,
+                 owner_name,
+                 curator_id,
+                 phone
+               FROM properties
                WHERE 1=1`;
   let params = [];
 
@@ -3005,7 +3003,7 @@ app.get("/public/properties", async (req, res) => {
 
     // Фильтры
     if (bid && !isNaN(parseInt(bid))) {
-      query += ` AND p.id = ?`;
+      query += ` AND id = ?`;
       params.push(parseInt(bid));
     } else if (bid) {
       return res.status(400).json({ error: "Недействительный параметр bid: должен быть числом" });
@@ -3017,68 +3015,68 @@ app.get("/public/properties", async (req, res) => {
     }
 
     if (ftype && ftype !== "all" && typeof ftype === "string") {
-      query += ` AND p.type_id = ?`;
+      query += ` AND type_id = ?`;
       params.push(ftype);
     }
 
     if (fjk && fjk !== "all" && typeof fjk === "string") {
-      query += ` AND p.zhk_id = ?`;
+      query += ` AND zhk_id = ?`;
       params.push(fjk);
     }
 
     if (fseria && fseria !== "all" && typeof fseria === "string") {
-      query += ` AND p.series = ?`;
+      query += ` AND series = ?`;
       params.push(fseria);
     }
 
     if (fsost && fsost !== "all") {
       if (fsost === "3") {
-        query += ` AND p.repair IS NULL`;
+        query += ` AND repair IS NULL`;
       } else if (fsost === "1") {
-        query += ` AND p.repair = ?`;
+        query += ` AND repair = ?`;
         params.push("ПСО");
       } else if (fsost === "2") {
-        query += ` AND p.repair = ?`;
+        query += ` AND repair = ?`;
         params.push("С отделкой");
       }
     }
 
     if (room && typeof room === "string" && room !== "") {
-      query += ` AND p.rooms = ?`;
+      query += ` AND rooms = ?`;
       params.push(room);
     }
 
     if (frayon && frayon !== "all" && typeof frayon === "string") {
-      query += ` AND p.district_id = ?`;
+      query += ` AND district_id = ?`;
       params.push(frayon);
     }
 
     if (fsubrayon && fsubrayon !== "all" && typeof fsubrayon === "string") {
-      query += ` AND p.subdistrict_id = ?`;
+      query += ` AND subdistrict_id = ?`;
       params.push(fsubrayon);
     }
 
     if (fprice && !isNaN(parseFloat(fprice))) {
-      query += ` AND p.price >= ?`;
+      query += ` AND price >= ?`;
       params.push(parseFloat(fprice));
     }
 
     if (fpriceto && !isNaN(parseFloat(fpriceto))) {
-      query += ` AND p.price <= ?`;
+      query += ` AND price <= ?`;
       params.push(parseFloat(fpriceto));
     }
 
     if (mkv && !isNaN(parseFloat(mkv))) {
-      query += ` AND p.mkv >= ?`;
+      query += ` AND mkv >= ?`;
       params.push(parseFloat(mkv));
     }
 
     if (fetaj && fetaj !== "all") {
       if (fetaj === "4") {
-        query += ` AND p.etaj >= ?`;
+        query += ` AND etaj >= ?`;
         params.push(4);
       } else if (!isNaN(parseInt(fetaj))) {
-        query += ` AND p.etaj = ?`;
+        query += ` AND etaj = ?`;
         params.push(parseInt(fetaj));
       }
     }
@@ -3130,9 +3128,7 @@ app.get("/public/properties", async (req, res) => {
         etajnost: row.etajnost || null,
         owner_phone: row.owner_phone || null,
         owner_name: row.owner_name || null,
-        curator_id: row.curator_id,
-        curator_name: row.curator_name || null,
-        curator_phone: row.curator_phone || null,
+        curator_id: row.curator_id || null,
         contact_phone: finalContactPhone,
         photos: parsedPhotos.map(
           img => `https://s3.twcstorage.ru/${bucketName}/${img}`
