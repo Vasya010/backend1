@@ -2147,8 +2147,8 @@ app.get("/public/user/properties", authenticate, async (req, res) => {
         status: row.status || null, // Возвращаем статус как есть из базы данных
         deal_type: dealType,
         photos: parsedPhotos.map(img => `https://s3.twcstorage.ru/${bucketName}/${img}`),
-        createdAt: row.created_at ? new Date(row.created_at).toIso8601String() : null,
-        updatedAt: row.updated_at ? new Date(row.updated_at).toIso8601String() : null,
+        createdAt: row.created_at ? new Date(row.created_at).toISOString() : null,
+        updatedAt: row.updated_at ? new Date(row.updated_at).toISOString() : null,
       };
 
       console.log(`Property ID ${row.id}: status="${row.status}", title="${row.title}"`);
