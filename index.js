@@ -2117,7 +2117,8 @@ app.get("/public/properties/:id", async (req, res) => {
       parsedPhotos = [];
     }
 
-    const contactPhone = row.owner_phone || row.curator_phone || row.phone || null;
+      const finalContactPhone = row.curator_phone || row.owner_phone || row.phone || null;
+    const contactPhone = row.curator_phone || row.owner_phone || row.phone || null;
 
     const property = {
       id: row.id,
@@ -3093,7 +3094,7 @@ app.get("/public/properties", async (req, res) => {
         curator_id: row.curator_id,
         curator_name: row.curator_name || null,
         curator_phone: row.curator_phone || null,
-        contact_phone: contactPhone,
+        contact_phone: finalContactPhone,
         photos: parsedPhotos.map(
           img => `https://s3.twcstorage.ru/${bucketName}/${img}`
         )
