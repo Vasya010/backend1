@@ -129,6 +129,77 @@ const dbConfig = {
 };
 const pool = mysql.createPool(dbConfig);
 
+const isAdminUser = (user) => {
+  const role = user?.role ? user.role.toUpperCase() : "";
+  return role === "ADMIN" || role === "SUPER_ADMIN";
+};
+
+const bootstrapBusinessTables = async () => {
+  let connection;
+  try {
+    connection = await pool.getConnection();
+    await connection.execute(`
+      CREATE TABLE IF NOT EXISTS crm_leads (
+        id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+        owner_id INT UNSIGNED NOT NULL,
+        name VARCHAR(255) NOT NULL,
+        phone VARCHAR(50),
+        budget VARCHAR(255),
+        status VARCHAR(50) DEFAULT 'new',
+        stage VARCHAR(50) DEFAULT 'lead',
+        priority VARCHAR(50) DEFAULT 'medium',
+        tags JSON DEFAULT NULL,
+        next_action_at DATETIME NULL,
+        notes TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        INDEX idx_owner_stage (owner_id, stage),
+        FOREIGN KEY (owner_id) REFERENCES users1(id) ON DELETE CASCADE
+      ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+    `);
+
+    await connection.execute(`
+      CREATE TABLE IF NOT EXISTS crm_tasks (
+        id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+        owner_id INT UNSIGNED NOT NULL,
+        lead_id INT UNSIGNED NULL,
+        title VARCHAR(255) NOT NULL,
+        type VARCHAR(50) DEFAULT 'call',
+        status VARCHAR(50) DEFAULT 'pending',
+        priority VARCHAR(50) DEFAULT 'normal',
+        due_at DATETIME NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        INDEX idx_owner_status (owner_id, status),
+        FOREIGN KEY (owner_id) REFERENCES users1(id) ON DELETE CASCADE,
+        FOREIGN KEY (lead_id) REFERENCES crm_leads(id) ON DELETE SET NULL
+      ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+    `);
+
+    await connection.execute(`
+      CREATE TABLE IF NOT EXISTS notifications (
+        id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+        user_id INT UNSIGNED NOT NULL,
+        title VARCHAR(255) NOT NULL,
+        body TEXT,
+        type VARCHAR(50) DEFAULT 'info',
+        is_read TINYINT(1) DEFAULT 0,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        read_at DATETIME NULL,
+        INDEX idx_user_read (user_id, is_read),
+        FOREIGN KEY (user_id) REFERENCES users1(id) ON DELETE CASCADE
+      ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+    `);
+  } catch (error) {
+    console.error("Error bootstrapping CRM/notification tables:", error.message);
+  } finally {
+    if (connection) connection.release();
+  }
+};
+
+bootstrapBusinessTables().catch((err) =>
+  console.error("Failed to initialize business tables:", err.message)
+);
 
 app.use('/images', express.static(path.join(__dirname, 'public/images')));
 
@@ -3769,6 +3840,327 @@ app.get("/public/properties", async (req, res) => {
       };
 });
 
+// CRM Dashboard
+app.get("/api/crm/dashboard", authenticate, async (req, res) => {
+  let connection;
+  try {
+    connection = await pool.getConnection();
+    const userId = req.user.id;
+
+    const [funnelRows] = await connection.execute(
+      "SELECT stage, COUNT(*) as count FROM crm_leads WHERE owner_id = ? GROUP BY stage",
+      [userId]
+    );
+
+    const [hotRows] = await connection.execute(
+      "SELECT COUNT(*) as total FROM crm_leads WHERE owner_id = ? AND priority = 'high'",
+      [userId]
+    );
+
+    const [taskRows] = await connection.execute(
+      "SELECT id, title, type, status, priority, due_at FROM crm_tasks WHERE owner_id = ? AND DATE(due_at) = CURDATE() ORDER BY due_at ASC LIMIT 10",
+      [userId]
+    );
+
+    const [pendingTasks] = await connection.execute(
+      "SELECT status, COUNT(*) as count FROM crm_tasks WHERE owner_id = ? GROUP BY status",
+      [userId]
+    );
+
+    const totalLeads = funnelRows.reduce((sum, row) => sum + row.count, 0);
+    const activeDeals = funnelRows.find((row) => row.stage === "deal")?.count || 0;
+    const newLeads = funnelRows.find((row) => row.stage === "lead")?.count || 0;
+
+    res.json({
+      totals: {
+        totalLeads,
+        activeDeals,
+        hotLeads: hotRows[0]?.total || 0,
+        newLeads,
+        pendingTasks: pendingTasks.find((row) => row.status === "pending")?.count || 0,
+      },
+      funnel: funnelRows.map((row) => ({
+        stage: row.stage,
+        count: row.count,
+      })),
+      tasksToday: taskRows.map((task) => ({
+        id: task.id,
+        title: task.title,
+        type: task.type,
+        status: task.status,
+        priority: task.priority,
+        dueAt: task.due_at,
+      })),
+    });
+  } catch (error) {
+    console.error("Error fetching CRM dashboard:", error.message);
+    res.status(500).json({ error: `Не удалось получить данные CRM: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
+// CRM Leads
+app.get("/api/crm/leads", authenticate, async (req, res) => {
+  let connection;
+  try {
+    connection = await pool.getConnection();
+    const [rows] = await connection.execute(
+      `SELECT id, name, phone, budget, status, stage, priority, next_action_at, notes, created_at
+       FROM crm_leads
+       WHERE owner_id = ?
+       ORDER BY created_at DESC
+       LIMIT 100`,
+      [req.user.id]
+    );
+    res.json(rows);
+  } catch (error) {
+    console.error("Error fetching CRM leads:", error.message);
+    res.status(500).json({ error: `Не удалось получить список лидов: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
+app.post("/api/crm/leads", authenticate, async (req, res) => {
+  const { name, phone, budget, status = "new", stage = "lead", priority = "medium", nextActionAt, notes } = req.body || {};
+  if (!name || !name.trim()) {
+    return res.status(400).json({ error: "Имя лида обязательно" });
+  }
+  let connection;
+  try {
+    connection = await pool.getConnection();
+    const [result] = await connection.execute(
+      `INSERT INTO crm_leads (owner_id, name, phone, budget, status, stage, priority, next_action_at, notes)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        req.user.id,
+        name.trim(),
+        phone?.trim() || null,
+        budget?.trim() || null,
+        status,
+        stage,
+        priority,
+        nextActionAt || null,
+        notes || null,
+      ]
+    );
+    const [leadRows] = await connection.execute(
+      "SELECT * FROM crm_leads WHERE id = ?",
+      [result.insertId]
+    );
+    res.status(201).json(leadRows[0]);
+  } catch (error) {
+    console.error("Error creating CRM lead:", error.message);
+    res.status(500).json({ error: `Не удалось создать лид: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
+app.patch("/api/crm/leads/:id", authenticate, async (req, res) => {
+  const { id } = req.params;
+  const { status, stage, priority, notes, nextActionAt } = req.body || {};
+  if (!id || isNaN(parseInt(id))) {
+    return res.status(400).json({ error: "Некорректный идентификатор лида" });
+  }
+  let connection;
+  try {
+    connection = await pool.getConnection();
+    const [leads] = await connection.execute(
+      "SELECT owner_id FROM crm_leads WHERE id = ?",
+      [parseInt(id)]
+    );
+    if (leads.length === 0) {
+      return res.status(404).json({ error: "Лид не найден" });
+    }
+    if (leads[0].owner_id !== req.user.id) {
+      return res.status(403).json({ error: "Нет доступа к этому лиду" });
+    }
+
+    await connection.execute(
+      `UPDATE crm_leads
+       SET status = COALESCE(?, status),
+           stage = COALESCE(?, stage),
+           priority = COALESCE(?, priority),
+           notes = COALESCE(?, notes),
+           next_action_at = COALESCE(?, next_action_at)
+       WHERE id = ?`,
+      [status, stage, priority, notes, nextActionAt, parseInt(id)]
+    );
+
+    const [leadRows] = await connection.execute("SELECT * FROM crm_leads WHERE id = ?", [parseInt(id)]);
+    res.json(leadRows[0]);
+  } catch (error) {
+    console.error("Error updating CRM lead:", error.message);
+    res.status(500).json({ error: `Не удалось обновить лид: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
+// CRM Tasks
+app.get("/api/crm/tasks", authenticate, async (req, res) => {
+  let connection;
+  try {
+    connection = await pool.getConnection();
+    const [rows] = await connection.execute(
+      `SELECT id, title, type, status, priority, due_at, lead_id
+       FROM crm_tasks
+       WHERE owner_id = ?
+       ORDER BY due_at ASC
+       LIMIT 100`,
+      [req.user.id]
+    );
+    res.json(rows);
+  } catch (error) {
+    console.error("Error fetching CRM tasks:", error.message);
+    res.status(500).json({ error: `Не удалось получить задачи: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
+app.post("/api/crm/tasks", authenticate, async (req, res) => {
+  const { title, type = "call", priority = "normal", dueAt, leadId } = req.body || {};
+  if (!title || !title.trim()) {
+    return res.status(400).json({ error: "Название задачи обязательно" });
+  }
+  let connection;
+  try {
+    connection = await pool.getConnection();
+    const [result] = await connection.execute(
+      `INSERT INTO crm_tasks (owner_id, lead_id, title, type, priority, due_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [
+        req.user.id,
+        leadId || null,
+        title.trim(),
+        type,
+        priority,
+        dueAt || null,
+      ]
+    );
+    const [taskRows] = await connection.execute("SELECT * FROM crm_tasks WHERE id = ?", [result.insertId]);
+    res.status(201).json(taskRows[0]);
+  } catch (error) {
+    console.error("Error creating CRM task:", error.message);
+    res.status(500).json({ error: `Не удалось создать задачу: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
+app.patch("/api/crm/tasks/:id/status", authenticate, async (req, res) => {
+  const { id } = req.params;
+  const { status } = req.body || {};
+  if (!id || isNaN(parseInt(id)) || !status) {
+    return res.status(400).json({ error: "Некорректные данные для обновления задачи" });
+  }
+  let connection;
+  try {
+    connection = await pool.getConnection();
+    const [tasks] = await connection.execute(
+      "SELECT owner_id FROM crm_tasks WHERE id = ?",
+      [parseInt(id)]
+    );
+    if (tasks.length === 0) {
+      return res.status(404).json({ error: "Задача не найдена" });
+    }
+    if (tasks[0].owner_id !== req.user.id) {
+      return res.status(403).json({ error: "Нет доступа к этой задаче" });
+    }
+    await connection.execute(
+      "UPDATE crm_tasks SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+      [status, parseInt(id)]
+    );
+    res.json({ message: "Статус задачи обновлён" });
+  } catch (error) {
+    console.error("Error updating CRM task:", error.message);
+    res.status(500).json({ error: `Не удалось обновить задачу: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
+// Notifications
+app.get("/api/notifications", authenticate, async (req, res) => {
+  let connection;
+  const limit = Math.min(parseInt(req.query.limit) || 50, 200);
+  try {
+    connection = await pool.getConnection();
+    const [rows] = await connection.execute(
+      `SELECT id, title, body, type, is_read, created_at, read_at
+       FROM notifications
+       WHERE user_id = ?
+       ORDER BY created_at DESC
+       LIMIT ?`,
+      [req.user.id, limit]
+    );
+    res.json(rows);
+  } catch (error) {
+    console.error("Error fetching notifications:", error.message);
+    res.status(500).json({ error: `Не удалось получить уведомления: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
+app.post("/api/notifications", authenticate, async (req, res) => {
+  if (!isAdminUser(req.user)) {
+    return res.status(403).json({ error: "Доступ запрещён" });
+  }
+  const { userId, title, body, type = "info" } = req.body || {};
+  if (!userId || !title) {
+    return res.status(400).json({ error: "userId и title обязательны" });
+  }
+  let connection;
+  try {
+    connection = await pool.getConnection();
+    await connection.execute(
+      `INSERT INTO notifications (user_id, title, body, type)
+       VALUES (?, ?, ?, ?)`,
+      [userId, title, body || null, type]
+    );
+    res.status(201).json({ message: "Уведомление создано" });
+  } catch (error) {
+    console.error("Error creating notification:", error.message);
+    res.status(500).json({ error: `Не удалось создать уведомление: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
+app.patch("/api/notifications/:id/read", authenticate, async (req, res) => {
+  const { id } = req.params;
+  if (!id || isNaN(parseInt(id))) {
+    return res.status(400).json({ error: "Некорректный идентификатор уведомления" });
+  }
+  let connection;
+  try {
+    connection = await pool.getConnection();
+    const [rows] = await connection.execute(
+      "SELECT user_id FROM notifications WHERE id = ?",
+      [parseInt(id)]
+    );
+    if (rows.length === 0) {
+      return res.status(404).json({ error: "Уведомление не найдено" });
+    }
+    if (rows[0].user_id !== req.user.id) {
+      return res.status(403).json({ error: "Нет доступа к этому уведомлению" });
+    }
+    await connection.execute(
+      "UPDATE notifications SET is_read = 1, read_at = CURRENT_TIMESTAMP WHERE id = ?",
+      [parseInt(id)]
+    );
+    res.json({ message: "Уведомление отмечено прочитанным" });
+  } catch (error) {
+    console.error("Error updating notification:", error.message);
+    res.status(500).json({ error: `Не удалось обновить уведомление: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
+  }
+});
 
     res.status(200).json(properties);
   } catch (error) {
