@@ -144,6 +144,7 @@ const bootstrapBusinessTables = async () => {
         owner_id INT UNSIGNED NOT NULL,
         name VARCHAR(255) NOT NULL,
         phone VARCHAR(50),
+        email VARCHAR(255),
         budget VARCHAR(255),
         status VARCHAR(50) DEFAULT 'new',
         stage VARCHAR(50) DEFAULT 'lead',
@@ -157,6 +158,12 @@ const bootstrapBusinessTables = async () => {
         FOREIGN KEY (owner_id) REFERENCES users1(id) ON DELETE CASCADE
       ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
     `);
+    
+    // Add email column if it doesn't exist
+    const [emailColumn] = await connection.execute("SHOW COLUMNS FROM crm_leads LIKE 'email'");
+    if (emailColumn.length === 0) {
+      await connection.execute("ALTER TABLE crm_leads ADD COLUMN email VARCHAR(255) NULL AFTER phone");
+    }
 
     await connection.execute(`
       CREATE TABLE IF NOT EXISTS crm_tasks (
@@ -164,6 +171,7 @@ const bootstrapBusinessTables = async () => {
         owner_id INT UNSIGNED NOT NULL,
         lead_id INT UNSIGNED NULL,
         title VARCHAR(255) NOT NULL,
+        description TEXT,
         type VARCHAR(50) DEFAULT 'call',
         status VARCHAR(50) DEFAULT 'pending',
         priority VARCHAR(50) DEFAULT 'normal',
@@ -175,6 +183,12 @@ const bootstrapBusinessTables = async () => {
         FOREIGN KEY (lead_id) REFERENCES crm_leads(id) ON DELETE SET NULL
       ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
     `);
+    
+    // Add description column if it doesn't exist
+    const [descColumn] = await connection.execute("SHOW COLUMNS FROM crm_tasks LIKE 'description'");
+    if (descColumn.length === 0) {
+      await connection.execute("ALTER TABLE crm_tasks ADD COLUMN description TEXT NULL AFTER title");
+    }
 
     await connection.execute(`
       CREATE TABLE IF NOT EXISTS notifications (
@@ -3923,7 +3937,7 @@ app.get("/api/crm/leads", authenticate, async (req, res) => {
 });
 
 app.post("/api/crm/leads", authenticate, async (req, res) => {
-  const { name, phone, budget, status = "new", stage = "lead", priority = "medium", nextActionAt, notes } = req.body || {};
+  const { name, phone, email, budget, status = "new", stage = "lead", priority = "medium", nextActionAt, notes } = req.body || {};
   if (!name || !name.trim()) {
     return res.status(400).json({ error: "Имя лида обязательно" });
   }
@@ -3931,12 +3945,13 @@ app.post("/api/crm/leads", authenticate, async (req, res) => {
   try {
     connection = await pool.getConnection();
     const [result] = await connection.execute(
-      `INSERT INTO crm_leads (owner_id, name, phone, budget, status, stage, priority, next_action_at, notes)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO crm_leads (owner_id, name, phone, email, budget, status, stage, priority, next_action_at, notes)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         req.user.id,
         name.trim(),
         phone?.trim() || null,
+        email?.trim() || null,
         budget?.trim() || null,
         status,
         stage,
@@ -4022,7 +4037,7 @@ app.get("/api/crm/tasks", authenticate, async (req, res) => {
 });
 
 app.post("/api/crm/tasks", authenticate, async (req, res) => {
-  const { title, type = "call", priority = "normal", dueAt, leadId } = req.body || {};
+  const { title, description, type = "call", priority = "normal", dueAt, leadId } = req.body || {};
   if (!title || !title.trim()) {
     return res.status(400).json({ error: "Название задачи обязательно" });
   }
@@ -4030,12 +4045,13 @@ app.post("/api/crm/tasks", authenticate, async (req, res) => {
   try {
     connection = await pool.getConnection();
     const [result] = await connection.execute(
-      `INSERT INTO crm_tasks (owner_id, lead_id, title, type, priority, due_at)
-       VALUES (?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO crm_tasks (owner_id, lead_id, title, description, type, priority, due_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
       [
         req.user.id,
         leadId || null,
         title.trim(),
+        description?.trim() || null,
         type,
         priority,
         dueAt || null,
