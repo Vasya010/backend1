@@ -6,6 +6,8 @@ const jwt = require("jsonwebtoken");
 const multer = require("multer");
 const { S3Client, PutObjectCommand, DeleteObjectCommand } = require("@aws-sdk/client-s3");
 const path = require("path");
+const QRCode = require("qrcode");
+const { v4: uuidv4 } = require("uuid");
 require("dotenv").config();
 
 const app = express();
@@ -4241,6 +4243,215 @@ app.patch("/api/properties/redirect", authenticate, async (req, res) => {
       stack: error.stack
     });
     res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
+// QR Code эндпоинты для входа в личный кабинет
+// Генерация QR-кода для входа
+app.get('/api/qr/generate', authenticate, async (req, res) => {
+  let connection;
+  try {
+    connection = await pool.getConnection();
+    const userId = req.user.id;
+    
+    // Создаем временный токен для QR-кода (действителен 5 минут)
+    const qrToken = uuidv4();
+    const expiresAt = new Date(Date.now() + 5 * 60 * 1000); // 5 минут
+    
+    // Сохраняем токен в базе данных
+    await connection.execute(
+      `CREATE TABLE IF NOT EXISTS qr_login_tokens (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        user_id INT NOT NULL,
+        token VARCHAR(255) NOT NULL UNIQUE,
+        expires_at DATETIME NOT NULL,
+        used BOOLEAN DEFAULT FALSE,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_token (token),
+        INDEX idx_user_id (user_id)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`
+    );
+    
+    await connection.execute(
+      'INSERT INTO qr_login_tokens (user_id, token, expires_at) VALUES (?, ?, ?)',
+      [userId, qrToken, expiresAt]
+    );
+    
+    // Генерируем URL для QR-кода
+    const qrUrl = `${publicDomain}/login?qr_token=${qrToken}`;
+    
+    // Генерируем QR-код как base64 изображение
+    const qrCodeDataUrl = await QRCode.toDataURL(qrUrl, {
+      errorCorrectionLevel: 'M',
+      type: 'image/png',
+      quality: 0.92,
+      margin: 2,
+      color: {
+        dark: '#000000',
+        light: '#FFFFFF'
+      },
+      width: 400
+    });
+    
+    res.json({
+      success: true,
+      qrCode: qrCodeDataUrl,
+      token: qrToken,
+      url: qrUrl,
+      expiresAt: expiresAt.toISOString()
+    });
+  } catch (error) {
+    console.error('Ошибка генерации QR-кода:', error);
+    res.status(500).json({ 
+      success: false,
+      error: 'Ошибка генерации QR-кода' 
+    });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
+// Обработка входа через QR-код
+app.post('/api/qr/login', async (req, res) => {
+  let connection;
+  try {
+    const { token } = req.body;
+    
+    if (!token) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Токен QR-кода не предоставлен' 
+      });
+    }
+    
+    connection = await pool.getConnection();
+    
+    // Проверяем токен в базе данных
+    const [tokens] = await connection.execute(
+      'SELECT * FROM qr_login_tokens WHERE token = ? AND used = FALSE',
+      [token]
+    );
+    
+    if (tokens.length === 0) {
+      return res.status(401).json({ 
+        success: false,
+        error: 'Недействительный или уже использованный QR-код' 
+      });
+    }
+    
+    const qrToken = tokens[0];
+    
+    // Проверяем срок действия
+    if (new Date(qrToken.expires_at) < new Date()) {
+      await connection.execute(
+        'UPDATE qr_login_tokens SET used = TRUE WHERE token = ?',
+        [token]
+      );
+      return res.status(401).json({ 
+        success: false,
+        error: 'QR-код истек. Сгенерируйте новый.' 
+      });
+    }
+    
+    // Получаем информацию о пользователе
+    const [users] = await connection.execute(
+      'SELECT id, email, phone, first_name, last_name, role, balance FROM users1 WHERE id = ?',
+      [qrToken.user_id]
+    );
+    
+    if (users.length === 0) {
+      return res.status(404).json({ 
+        success: false,
+        error: 'Пользователь не найден' 
+      });
+    }
+    
+    const user = users[0];
+    
+    // Помечаем токен как использованный
+    await connection.execute(
+      'UPDATE qr_login_tokens SET used = TRUE WHERE token = ?',
+      [token]
+    );
+    
+    // Генерируем JWT токен для входа
+    const jwtToken = jwt.sign(
+      { 
+        id: user.id, 
+        email: user.email,
+        role: user.role 
+      },
+      jwtSecret,
+      { expiresIn: '30d' }
+    );
+    
+    // Обновляем токен пользователя в базе данных
+    await connection.execute(
+      'UPDATE users1 SET token = ? WHERE id = ?',
+      [jwtToken, user.id]
+    );
+    
+    res.json({
+      success: true,
+      message: 'Вход выполнен успешно',
+      token: jwtToken,
+      user: {
+        id: user.id,
+        email: user.email,
+        phone: user.phone,
+        firstName: user.first_name,
+        lastName: user.last_name,
+        role: user.role,
+        balance: user.balance
+      }
+    });
+  } catch (error) {
+    console.error('Ошибка входа через QR-код:', error);
+    res.status(500).json({ 
+      success: false,
+      error: 'Ошибка сервера при обработке входа' 
+    });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
+// Получение статуса QR-кода (для проверки, был ли он использован)
+app.get('/api/qr/status/:token', authenticate, async (req, res) => {
+  let connection;
+  try {
+    const { token } = req.params;
+    connection = await pool.getConnection();
+    
+    const [tokens] = await connection.execute(
+      'SELECT * FROM qr_login_tokens WHERE token = ?',
+      [token]
+    );
+    
+    if (tokens.length === 0) {
+      return res.status(404).json({ 
+        success: false,
+        error: 'QR-код не найден' 
+      });
+    }
+    
+    const qrToken = tokens[0];
+    const isExpired = new Date(qrToken.expires_at) < new Date();
+    
+    res.json({
+      success: true,
+      used: qrToken.used === 1,
+      expired: isExpired,
+      expiresAt: qrToken.expires_at
+    });
+  } catch (error) {
+    console.error('Ошибка проверки статуса QR-кода:', error);
+    res.status(500).json({ 
+      success: false,
+      error: 'Ошибка сервера' 
+    });
   } finally {
     if (connection) connection.release();
   }
