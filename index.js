@@ -554,7 +554,7 @@ async function testDatabaseConnection() {
   }
 }
 
-testDatabaseConnection();
+// testDatabaseConnection(); // Moved to server startup
 
 // Test Endpoint
 app.get("/api/message", (req, res) => {
@@ -6349,7 +6349,15 @@ app.delete("/api/friendships/:id", authenticate, async (req, res) => {
 });
 
 // Start Server
-app.listen(port, () => {
-  console.log(`Server running on http://localhost:${port}`);
-  console.log(`Public access: ${publicDomain}:${port}`);
+testDatabaseConnection().then(() => {
+  app.listen(port, () => {
+    console.log(`Server running on http://localhost:${port}`);
+    console.log(`Public access: ${publicDomain}:${port}`);
+  });
+}).catch((err) => {
+  console.error("Failed to initialize database, but starting server anyway:", err);
+  app.listen(port, () => {
+    console.log(`Server running on http://localhost:${port}`);
+    console.log(`Public access: ${publicDomain}:${port}`);
+  });
 });
