@@ -5236,6 +5236,7 @@ app.get("/api/bots", authenticate, async (req, res) => {
           token VARCHAR(500) NOT NULL,
           description TEXT,
           webhook_url VARCHAR(500),
+          api_endpoint VARCHAR(500),
           is_active TINYINT(1) DEFAULT 1,
           created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
           updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -5250,7 +5251,7 @@ app.get("/api/bots", authenticate, async (req, res) => {
     }
     
     const [bots] = await connection.execute(
-      `SELECT id, name, username, description, is_active, created_at, updated_at
+      `SELECT id, name, username, description, is_active, created_at, updated_at, api_endpoint
        FROM bots
        WHERE owner_id = ?
        ORDER BY created_at DESC`,
@@ -5283,6 +5284,7 @@ app.post("/api/bots", authenticate, async (req, res) => {
           token VARCHAR(500) NOT NULL,
           description TEXT,
           webhook_url VARCHAR(500),
+          api_endpoint VARCHAR(500),
           is_active TINYINT(1) DEFAULT 1,
           created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
           updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -5327,15 +5329,16 @@ app.post("/api/bots", authenticate, async (req, res) => {
     
     // Create bot
     const [result] = await connection.execute(
-      `INSERT INTO bots (owner_id, name, username, token, description, webhook_url)
-       VALUES (?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO bots (owner_id, name, username, token, description, webhook_url, api_endpoint)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
       [
         req.user.id,
         name.trim(),
         username,
         token,
         description?.trim() || null,
-        `${publicDomain}/api/bots/${username}/webhook`
+        `${publicDomain}/api/bots/${username}/webhook`,
+        `${publicDomain}/api/bots/${username}/api`
       ]
     );
     
@@ -5591,21 +5594,55 @@ app.post("/api/bots/:botId/chat/messages", authenticate, async (req, res) => {
       [botId, userId, message.trim()]
     );
     
-    // Generate bot response (simple echo for now, can be customized)
-    let response = "Привет! Я бот ${bot.name}. Вы написали: ${message.trim()}";
+    let response = null;
     
-    // Simple bot logic - can be extended
-    const lowerMessage = message.toLowerCase().trim();
-    if (lowerMessage.includes('привет') || lowerMessage.includes('здравствуй')) {
-      response = "Привет! Чем могу помочь?";
-    } else if (lowerMessage.includes('помощь') || lowerMessage.includes('help')) {
-      response = "Я могу помочь вам с информацией о недвижимости. Что вас интересует?";
-    } else if (lowerMessage.includes('цена') || lowerMessage.includes('стоимость')) {
-      response = "Для получения информации о ценах, пожалуйста, укажите интересующий вас объект недвижимости.";
-    } else if (lowerMessage.includes('контакт') || lowerMessage.includes('связаться')) {
-      response = "Вы можете связаться с нами через чат с куратором или по телефону, указанному в объявлении.";
-    } else {
-      response = "Спасибо за сообщение! Я передам ваш запрос владельцу бота.";
+    // If developer has set up custom API endpoint, call it
+    if (bot.api_endpoint) {
+      try {
+        const apiResponse = await axios.post(
+          bot.api_endpoint,
+          {
+            token: bot.token,
+            message: message.trim(),
+            user_id: userId,
+            bot_id: botId,
+          },
+          {
+            timeout: 10000, // 10 second timeout
+            headers: {
+              'Content-Type': 'application/json',
+            }
+          }
+        );
+        
+        if (apiResponse.data && apiResponse.data.response) {
+          response = apiResponse.data.response;
+        } else if (apiResponse.data && typeof apiResponse.data === 'string') {
+          // If response is just a string
+          response = apiResponse.data;
+        }
+      } catch (apiError) {
+        console.error("Error calling custom bot API:", apiError.message);
+        // Fall back to default response if custom API fails
+        response = `Ошибка подключения к API бота: ${apiError.message}. Используется стандартная логика.`;
+      }
+    }
+    
+    // If no custom API or it failed, use default logic
+    if (!response) {
+      // Default bot response (simple echo for now, can be customized)
+      const lowerMessage = message.toLowerCase().trim();
+      if (lowerMessage.includes('привет') || lowerMessage.includes('здравствуй')) {
+        response = "Привет! Чем могу помочь?";
+      } else if (lowerMessage.includes('помощь') || lowerMessage.includes('help')) {
+        response = "Я могу помочь вам с информацией о недвижимости. Что вас интересует?";
+      } else if (lowerMessage.includes('цена') || lowerMessage.includes('стоимость')) {
+        response = "Для получения информации о ценах, пожалуйста, укажите интересующий вас объект недвижимости.";
+      } else if (lowerMessage.includes('контакт') || lowerMessage.includes('связаться')) {
+        response = "Вы можете связаться с нами через чат с куратором или по телефону, указанному в объявлении.";
+      } else {
+        response = "Спасибо за сообщение! Я передам ваш запрос владельцу бота.";
+      }
     }
     
     // Store bot response
