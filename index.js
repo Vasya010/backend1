@@ -5666,6 +5666,676 @@ app.post("/api/bots/:botId/chat/messages", authenticate, async (req, res) => {
   }
 });
 
+// ==================== GROUPS API ====================
+
+// Get all groups (public or user's groups)
+app.get("/api/groups", authenticate, async (req, res) => {
+  let connection;
+  try {
+    connection = await pool.getConnection();
+    const userId = req.user.id;
+    const { search, type } = req.query; // type: 'all', 'my', 'public'
+    
+    // Ensure tables exist
+    try {
+      await connection.execute(`
+        CREATE TABLE IF NOT EXISTS groups (
+          id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+          name VARCHAR(255) NOT NULL,
+          description TEXT,
+          avatar_url VARCHAR(500),
+          creator_id INT UNSIGNED NOT NULL,
+          is_public TINYINT(1) DEFAULT 1,
+          max_members INT UNSIGNED DEFAULT 1000,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          INDEX idx_creator (creator_id),
+          INDEX idx_public (is_public),
+          FOREIGN KEY (creator_id) REFERENCES users1(id) ON DELETE CASCADE
+        ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+      `);
+      
+      await connection.execute(`
+        CREATE TABLE IF NOT EXISTS group_members (
+          id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+          group_id INT UNSIGNED NOT NULL,
+          user_id INT UNSIGNED NOT NULL,
+          role ENUM('admin', 'moderator', 'member') DEFAULT 'member',
+          joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE KEY unique_group_user (group_id, user_id),
+          INDEX idx_group (group_id),
+          INDEX idx_user (user_id),
+          FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE,
+          FOREIGN KEY (user_id) REFERENCES users1(id) ON DELETE CASCADE
+        ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+      `);
+    } catch (tableError) {
+      console.log("Groups tables check:", tableError.message);
+    }
+    
+    let query = `
+      SELECT g.*, 
+             u.first_name as creator_first_name,
+             u.last_name as creator_last_name,
+             COUNT(gm.user_id) as member_count
+      FROM groups g
+      LEFT JOIN users1 u ON g.creator_id = u.id
+      LEFT JOIN group_members gm ON g.id = gm.group_id
+    `;
+    const params = [];
+    
+    if (type === 'my') {
+      query += ` WHERE EXISTS (
+        SELECT 1 FROM group_members gm2 
+        WHERE gm2.group_id = g.id AND gm2.user_id = ?
+      )`;
+      params.push(userId);
+    } else if (type === 'public') {
+      query += ` WHERE g.is_public = 1`;
+    }
+    
+    if (search) {
+      query += type ? ` AND` : ` WHERE`;
+      query += ` (g.name LIKE ? OR g.description LIKE ?)`;
+      params.push(`%${search}%`, `%${search}%`);
+    }
+    
+    query += ` GROUP BY g.id ORDER BY g.created_at DESC`;
+    
+    const [groups] = await connection.execute(query, params);
+    
+    // Check if user is member of each group
+    for (let group of groups) {
+      const [members] = await connection.execute(
+        "SELECT role FROM group_members WHERE group_id = ? AND user_id = ?",
+        [group.id, userId]
+      );
+      group.is_member = members.length > 0;
+      group.user_role = members.length > 0 ? members[0].role : null;
+    }
+    
+    res.json(groups);
+  } catch (error) {
+    console.error("Error fetching groups:", error);
+    res.status(500).json({ error: `Ошибка получения групп: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
+// Create group
+app.post("/api/groups", authenticate, async (req, res) => {
+  let connection;
+  try {
+    connection = await pool.getConnection();
+    const { name, description, is_public, max_members } = req.body;
+    
+    if (!name || !name.trim()) {
+      return res.status(400).json({ error: "Название группы обязательно" });
+    }
+    
+    // Ensure tables exist
+    try {
+      await connection.execute(`
+        CREATE TABLE IF NOT EXISTS groups (
+          id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+          name VARCHAR(255) NOT NULL,
+          description TEXT,
+          avatar_url VARCHAR(500),
+          creator_id INT UNSIGNED NOT NULL,
+          is_public TINYINT(1) DEFAULT 1,
+          max_members INT UNSIGNED DEFAULT 1000,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          INDEX idx_creator (creator_id),
+          INDEX idx_public (is_public),
+          FOREIGN KEY (creator_id) REFERENCES users1(id) ON DELETE CASCADE
+        ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+      `);
+      
+      await connection.execute(`
+        CREATE TABLE IF NOT EXISTS group_members (
+          id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+          group_id INT UNSIGNED NOT NULL,
+          user_id INT UNSIGNED NOT NULL,
+          role ENUM('admin', 'moderator', 'member') DEFAULT 'member',
+          joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE KEY unique_group_user (group_id, user_id),
+          INDEX idx_group (group_id),
+          INDEX idx_user (user_id),
+          FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE,
+          FOREIGN KEY (user_id) REFERENCES users1(id) ON DELETE CASCADE
+        ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+      `);
+    } catch (tableError) {
+      console.log("Groups tables check:", tableError.message);
+    }
+    
+    const [result] = await connection.execute(
+      `INSERT INTO groups (name, description, creator_id, is_public, max_members)
+       VALUES (?, ?, ?, ?, ?)`,
+      [
+        name.trim(),
+        description?.trim() || null,
+        req.user.id,
+        is_public !== undefined ? (is_public ? 1 : 0) : 1,
+        max_members || 1000
+      ]
+    );
+    
+    // Add creator as admin
+    await connection.execute(
+      `INSERT INTO group_members (group_id, user_id, role)
+       VALUES (?, ?, 'admin')`,
+      [result.insertId, req.user.id]
+    );
+    
+    const [groups] = await connection.execute(
+      `SELECT g.*, 
+              u.first_name as creator_first_name,
+              u.last_name as creator_last_name,
+              COUNT(gm.user_id) as member_count
+       FROM groups g
+       LEFT JOIN users1 u ON g.creator_id = u.id
+       LEFT JOIN group_members gm ON g.id = gm.group_id
+       WHERE g.id = ?
+       GROUP BY g.id`,
+      [result.insertId]
+    );
+    
+    const group = groups[0];
+    group.is_member = true;
+    group.user_role = 'admin';
+    
+    res.status(201).json(group);
+  } catch (error) {
+    console.error("Error creating group:", error);
+    res.status(500).json({ error: `Ошибка создания группы: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
+// Get group details
+app.get("/api/groups/:id", authenticate, async (req, res) => {
+  let connection;
+  try {
+    connection = await pool.getConnection();
+    const groupId = parseInt(req.params.id);
+    const userId = req.user.id;
+    
+    const [groups] = await connection.execute(
+      `SELECT g.*, 
+              u.first_name as creator_first_name,
+              u.last_name as creator_last_name,
+              COUNT(gm.user_id) as member_count
+       FROM groups g
+       LEFT JOIN users1 u ON g.creator_id = u.id
+       LEFT JOIN group_members gm ON g.id = gm.group_id
+       WHERE g.id = ?
+       GROUP BY g.id`,
+      [groupId]
+    );
+    
+    if (groups.length === 0) {
+      return res.status(404).json({ error: "Группа не найдена" });
+    }
+    
+    const group = groups[0];
+    
+    // Check membership
+    const [members] = await connection.execute(
+      "SELECT role FROM group_members WHERE group_id = ? AND user_id = ?",
+      [groupId, userId]
+    );
+    group.is_member = members.length > 0;
+    group.user_role = members.length > 0 ? members[0].role : null;
+    
+    // Get members list
+    const [membersList] = await connection.execute(
+      `SELECT gm.*, u.id as user_id, u.first_name, u.last_name, u.profile_picture
+       FROM group_members gm
+       JOIN users1 u ON gm.user_id = u.id
+       WHERE gm.group_id = ?
+       ORDER BY gm.joined_at ASC`,
+      [groupId]
+    );
+    group.members = membersList;
+    
+    res.json(group);
+  } catch (error) {
+    console.error("Error fetching group:", error);
+    res.status(500).json({ error: `Ошибка получения группы: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
+// Join group
+app.post("/api/groups/:id/join", authenticate, async (req, res) => {
+  let connection;
+  try {
+    connection = await pool.getConnection();
+    const groupId = parseInt(req.params.id);
+    const userId = req.user.id;
+    
+    // Check if group exists and is public
+    const [groups] = await connection.execute(
+      "SELECT is_public, max_members FROM groups WHERE id = ?",
+      [groupId]
+    );
+    
+    if (groups.length === 0) {
+      return res.status(404).json({ error: "Группа не найдена" });
+    }
+    
+    const group = groups[0];
+    
+    if (!group.is_public) {
+      return res.status(403).json({ error: "Группа закрыта для присоединения" });
+    }
+    
+    // Check current member count
+    const [memberCount] = await connection.execute(
+      "SELECT COUNT(*) as count FROM group_members WHERE group_id = ?",
+      [groupId]
+    );
+    
+    if (memberCount[0].count >= group.max_members) {
+      return res.status(400).json({ error: "Группа переполнена" });
+    }
+    
+    // Check if already member
+    const [existing] = await connection.execute(
+      "SELECT id FROM group_members WHERE group_id = ? AND user_id = ?",
+      [groupId, userId]
+    );
+    
+    if (existing.length > 0) {
+      return res.status(400).json({ error: "Вы уже участник группы" });
+    }
+    
+    // Add member
+    await connection.execute(
+      `INSERT INTO group_members (group_id, user_id, role)
+       VALUES (?, ?, 'member')`,
+      [groupId, userId]
+    );
+    
+    res.json({ message: "Вы успешно присоединились к группе" });
+  } catch (error) {
+    console.error("Error joining group:", error);
+    res.status(500).json({ error: `Ошибка присоединения к группе: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
+// Leave group
+app.post("/api/groups/:id/leave", authenticate, async (req, res) => {
+  let connection;
+  try {
+    connection = await pool.getConnection();
+    const groupId = parseInt(req.params.id);
+    const userId = req.user.id;
+    
+    // Check if member
+    const [members] = await connection.execute(
+      "SELECT role FROM group_members WHERE group_id = ? AND user_id = ?",
+      [groupId, userId]
+    );
+    
+    if (members.length === 0) {
+      return res.status(400).json({ error: "Вы не участник группы" });
+    }
+    
+    // Don't allow creator to leave (should delete group instead)
+    const [groups] = await connection.execute(
+      "SELECT creator_id FROM groups WHERE id = ?",
+      [groupId]
+    );
+    
+    if (groups[0].creator_id === userId) {
+      return res.status(400).json({ error: "Создатель группы не может покинуть её. Удалите группу вместо этого." });
+    }
+    
+    await connection.execute(
+      "DELETE FROM group_members WHERE group_id = ? AND user_id = ?",
+      [groupId, userId]
+    );
+    
+    res.json({ message: "Вы покинули группу" });
+  } catch (error) {
+    console.error("Error leaving group:", error);
+    res.status(500).json({ error: `Ошибка выхода из группы: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
+// Delete group
+app.delete("/api/groups/:id", authenticate, async (req, res) => {
+  let connection;
+  try {
+    connection = await pool.getConnection();
+    const groupId = parseInt(req.params.id);
+    
+    // Verify ownership
+    const [groups] = await connection.execute(
+      "SELECT creator_id FROM groups WHERE id = ?",
+      [groupId]
+    );
+    
+    if (groups.length === 0) {
+      return res.status(404).json({ error: "Группа не найдена" });
+    }
+    
+    if (groups[0].creator_id !== req.user.id) {
+      return res.status(403).json({ error: "Только создатель может удалить группу" });
+    }
+    
+    await connection.execute("DELETE FROM groups WHERE id = ?", [groupId]);
+    
+    res.json({ message: "Группа удалена" });
+  } catch (error) {
+    console.error("Error deleting group:", error);
+    res.status(500).json({ error: `Ошибка удаления группы: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
+// ==================== USER SEARCH API ====================
+
+// Search users
+app.get("/api/users/search", authenticate, async (req, res) => {
+  let connection;
+  try {
+    connection = await pool.getConnection();
+    const { q, limit = 20 } = req.query;
+    
+    if (!q || q.trim().length < 2) {
+      return res.status(400).json({ error: "Минимум 2 символа для поиска" });
+    }
+    
+    const searchTerm = `%${q.trim()}%`;
+    const searchLimit = Math.min(Math.max(parseInt(limit), 1), 50);
+    
+    const [users] = await connection.execute(
+      `SELECT id, first_name, last_name, email, profile_picture, phone, role
+       FROM users1
+       WHERE (first_name LIKE ? OR last_name LIKE ? OR email LIKE ? OR phone LIKE ?)
+       AND id != ?
+       ORDER BY first_name, last_name
+       LIMIT ${searchLimit}`,
+      [searchTerm, searchTerm, searchTerm, searchTerm, req.user.id]
+    );
+    
+    res.json(users);
+  } catch (error) {
+    console.error("Error searching users:", error);
+    res.status(500).json({ error: `Ошибка поиска пользователей: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
+// ==================== FRIENDSHIPS API ====================
+
+// Get friendships (friends, pending requests)
+app.get("/api/friendships", authenticate, async (req, res) => {
+  let connection;
+  try {
+    connection = await pool.getConnection();
+    const userId = req.user.id;
+    const { status } = req.query; // 'pending', 'accepted', 'all'
+    
+    // Ensure table exists
+    try {
+      await connection.execute(`
+        CREATE TABLE IF NOT EXISTS friendships (
+          id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+          requester_id INT UNSIGNED NOT NULL,
+          addressee_id INT UNSIGNED NOT NULL,
+          status ENUM('pending', 'accepted', 'rejected', 'blocked') DEFAULT 'pending',
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          UNIQUE KEY unique_friendship (requester_id, addressee_id),
+          INDEX idx_requester (requester_id),
+          INDEX idx_addressee (addressee_id),
+          INDEX idx_status (status),
+          FOREIGN KEY (requester_id) REFERENCES users1(id) ON DELETE CASCADE,
+          FOREIGN KEY (addressee_id) REFERENCES users1(id) ON DELETE CASCADE,
+          CHECK (requester_id != addressee_id)
+        ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+      `);
+    } catch (tableError) {
+      console.log("Friendships table check:", tableError.message);
+    }
+    
+    let query = `
+      SELECT f.*,
+             CASE 
+               WHEN f.requester_id = ? THEN f.addressee_id
+               ELSE f.requester_id
+             END as friend_id,
+             CASE 
+               WHEN f.requester_id = ? THEN u2.id
+               ELSE u1.id
+             END as friend_user_id,
+             CASE 
+               WHEN f.requester_id = ? THEN CONCAT(u2.first_name, ' ', u2.last_name)
+               ELSE CONCAT(u1.first_name, ' ', u1.last_name)
+             END as friend_name,
+             CASE 
+               WHEN f.requester_id = ? THEN u2.profile_picture
+               ELSE u1.profile_picture
+             END as friend_avatar,
+             CASE 
+               WHEN f.requester_id = ? THEN 1
+               ELSE 0
+             END as is_requester
+      FROM friendships f
+      LEFT JOIN users1 u1 ON f.requester_id = u1.id
+      LEFT JOIN users1 u2 ON f.addressee_id = u2.id
+      WHERE (f.requester_id = ? OR f.addressee_id = ?)
+    `;
+    const params = [userId, userId, userId, userId, userId, userId, userId];
+    
+    if (status && status !== 'all') {
+      query += ` AND f.status = ?`;
+      params.push(status);
+    }
+    
+    query += ` ORDER BY f.updated_at DESC`;
+    
+    const [friendships] = await connection.execute(query, params);
+    
+    res.json(friendships);
+  } catch (error) {
+    console.error("Error fetching friendships:", error);
+    res.status(500).json({ error: `Ошибка получения друзей: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
+// Send friend request
+app.post("/api/friendships", authenticate, async (req, res) => {
+  let connection;
+  try {
+    connection = await pool.getConnection();
+    const { user_id } = req.body;
+    const requesterId = req.user.id;
+    
+    if (!user_id || user_id === requesterId) {
+      return res.status(400).json({ error: "Некорректный ID пользователя" });
+    }
+    
+    // Ensure table exists
+    try {
+      await connection.execute(`
+        CREATE TABLE IF NOT EXISTS friendships (
+          id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+          requester_id INT UNSIGNED NOT NULL,
+          addressee_id INT UNSIGNED NOT NULL,
+          status ENUM('pending', 'accepted', 'rejected', 'blocked') DEFAULT 'pending',
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          UNIQUE KEY unique_friendship (requester_id, addressee_id),
+          INDEX idx_requester (requester_id),
+          INDEX idx_addressee (addressee_id),
+          INDEX idx_status (status),
+          FOREIGN KEY (requester_id) REFERENCES users1(id) ON DELETE CASCADE,
+          FOREIGN KEY (addressee_id) REFERENCES users1(id) ON DELETE CASCADE,
+          CHECK (requester_id != addressee_id)
+        ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+      `);
+    } catch (tableError) {
+      console.log("Friendships table check:", tableError.message);
+    }
+    
+    // Check if user exists
+    const [users] = await connection.execute(
+      "SELECT id FROM users1 WHERE id = ?",
+      [user_id]
+    );
+    
+    if (users.length === 0) {
+      return res.status(404).json({ error: "Пользователь не найден" });
+    }
+    
+    // Check if friendship already exists
+    const [existing] = await connection.execute(
+      `SELECT id, status FROM friendships 
+       WHERE (requester_id = ? AND addressee_id = ?) 
+       OR (requester_id = ? AND addressee_id = ?)`,
+      [requesterId, user_id, user_id, requesterId]
+    );
+    
+    if (existing.length > 0) {
+      const existingFriendship = existing[0];
+      if (existingFriendship.status === 'accepted') {
+        return res.status(400).json({ error: "Вы уже друзья" });
+      } else if (existingFriendship.status === 'pending') {
+        return res.status(400).json({ error: "Запрос уже отправлен" });
+      } else if (existingFriendship.status === 'blocked') {
+        return res.status(403).json({ error: "Запрос заблокирован" });
+      }
+    }
+    
+    // Create friend request
+    const [result] = await connection.execute(
+      `INSERT INTO friendships (requester_id, addressee_id, status)
+       VALUES (?, ?, 'pending')`,
+      [requesterId, user_id]
+    );
+    
+    const [friendships] = await connection.execute(
+      `SELECT f.*,
+              u.id as friend_user_id,
+              CONCAT(u.first_name, ' ', u.last_name) as friend_name,
+              u.profile_picture as friend_avatar,
+              1 as is_requester
+       FROM friendships f
+       JOIN users1 u ON f.addressee_id = u.id
+       WHERE f.id = ?`,
+      [result.insertId]
+    );
+    
+    res.status(201).json(friendships[0]);
+  } catch (error) {
+    console.error("Error creating friendship:", error);
+    res.status(500).json({ error: `Ошибка отправки запроса: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
+// Accept/Reject friend request
+app.patch("/api/friendships/:id", authenticate, async (req, res) => {
+  let connection;
+  try {
+    connection = await pool.getConnection();
+    const friendshipId = parseInt(req.params.id);
+    const { status } = req.body; // 'accepted', 'rejected'
+    
+    if (!['accepted', 'rejected'].includes(status)) {
+      return res.status(400).json({ error: "Некорректный статус" });
+    }
+    
+    // Get friendship
+    const [friendships] = await connection.execute(
+      "SELECT * FROM friendships WHERE id = ?",
+      [friendshipId]
+    );
+    
+    if (friendships.length === 0) {
+      return res.status(404).json({ error: "Запрос не найден" });
+    }
+    
+    const friendship = friendships[0];
+    
+    // Check if user is the addressee
+    if (friendship.addressee_id !== req.user.id) {
+      return res.status(403).json({ error: "Вы не можете изменить этот запрос" });
+    }
+    
+    // Update status
+    await connection.execute(
+      `UPDATE friendships SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+      [status, friendshipId]
+    );
+    
+    const [updated] = await connection.execute(
+      "SELECT * FROM friendships WHERE id = ?",
+      [friendshipId]
+    );
+    
+    res.json(updated[0]);
+  } catch (error) {
+    console.error("Error updating friendship:", error);
+    res.status(500).json({ error: `Ошибка обновления запроса: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
+// Delete friendship (unfriend)
+app.delete("/api/friendships/:id", authenticate, async (req, res) => {
+  let connection;
+  try {
+    connection = await pool.getConnection();
+    const friendshipId = parseInt(req.params.id);
+    
+    // Get friendship
+    const [friendships] = await connection.execute(
+      "SELECT * FROM friendships WHERE id = ?",
+      [friendshipId]
+    );
+    
+    if (friendships.length === 0) {
+      return res.status(404).json({ error: "Запрос не найден" });
+    }
+    
+    const friendship = friendships[0];
+    
+    // Check if user is part of this friendship
+    if (friendship.requester_id !== req.user.id && friendship.addressee_id !== req.user.id) {
+      return res.status(403).json({ error: "Вы не можете удалить этот запрос" });
+    }
+    
+    await connection.execute("DELETE FROM friendships WHERE id = ?", [friendshipId]);
+    
+    res.json({ message: "Запрос удален" });
+  } catch (error) {
+    console.error("Error deleting friendship:", error);
+    res.status(500).json({ error: `Ошибка удаления запроса: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
 // Start Server
 app.listen(port, () => {
   console.log(`Server running on http://localhost:${port}`);
