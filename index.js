@@ -4720,14 +4720,28 @@ app.get("/api/chats", authenticate, async (req, res) => {
       if (chat.last_message) {
         try {
           // Check if it's already an object or a string
-          if (typeof chat.last_message === 'string') {
-            lastMessage = JSON.parse(chat.last_message);
-          } else {
+          const messageValue = chat.last_message;
+          
+          // Skip if it's the string "[object Object]" which indicates a serialization issue
+          if (typeof messageValue === 'string' && messageValue === '[object Object]') {
+            console.warn("Skipping invalid last_message format: [object Object]");
+            lastMessage = null;
+          } else if (typeof messageValue === 'string') {
+            // Try to parse as JSON string
+            try {
+              lastMessage = JSON.parse(messageValue);
+            } catch (parseError) {
+              // If parsing fails, it might be a string representation of object
+              console.warn("Could not parse last_message as JSON string:", messageValue);
+              lastMessage = null;
+            }
+          } else if (typeof messageValue === 'object' && messageValue !== null) {
             // Already an object from JSON_OBJECT
-            lastMessage = chat.last_message;
+            lastMessage = messageValue;
           }
         } catch (e) {
-          console.error("Error parsing last message:", e);
+          console.error("Error processing last message:", e.message, "Type:", typeof chat.last_message);
+          lastMessage = null;
         }
       }
 
