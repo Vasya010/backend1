@@ -3904,6 +3904,52 @@ app.get("/api/crm/dashboard", authenticate, async (req, res) => {
   let connection;
   try {
     connection = await pool.getConnection();
+    
+    // Ensure CRM tables exist
+    try {
+      await connection.execute(`
+        CREATE TABLE IF NOT EXISTS crm_leads (
+          id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+          owner_id INT UNSIGNED NOT NULL,
+          name VARCHAR(255) NOT NULL,
+          phone VARCHAR(50),
+          email VARCHAR(255),
+          budget VARCHAR(255),
+          status VARCHAR(50) DEFAULT 'new',
+          stage VARCHAR(50) DEFAULT 'lead',
+          priority VARCHAR(50) DEFAULT 'medium',
+          tags JSON DEFAULT NULL,
+          next_action_at DATETIME NULL,
+          notes TEXT,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          INDEX idx_owner_stage (owner_id, stage),
+          FOREIGN KEY (owner_id) REFERENCES users1(id) ON DELETE CASCADE
+        ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+      `);
+      
+      await connection.execute(`
+        CREATE TABLE IF NOT EXISTS crm_tasks (
+          id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+          owner_id INT UNSIGNED NOT NULL,
+          lead_id INT UNSIGNED NULL,
+          title VARCHAR(255) NOT NULL,
+          description TEXT,
+          type VARCHAR(50) DEFAULT 'call',
+          status VARCHAR(50) DEFAULT 'pending',
+          priority VARCHAR(50) DEFAULT 'normal',
+          due_at DATETIME NULL,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          INDEX idx_owner_status (owner_id, status),
+          FOREIGN KEY (owner_id) REFERENCES users1(id) ON DELETE CASCADE,
+          FOREIGN KEY (lead_id) REFERENCES crm_leads(id) ON DELETE SET NULL
+        ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+      `);
+    } catch (tableError) {
+      console.log("CRM tables check:", tableError.message);
+    }
+    
     const userId = req.user.id;
 
     const [funnelRows] = await connection.execute(
@@ -4064,6 +4110,31 @@ app.get("/api/crm/tasks", authenticate, async (req, res) => {
   let connection;
   try {
     connection = await pool.getConnection();
+    
+    // Ensure CRM tasks table exists
+    try {
+      await connection.execute(`
+        CREATE TABLE IF NOT EXISTS crm_tasks (
+          id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+          owner_id INT UNSIGNED NOT NULL,
+          lead_id INT UNSIGNED NULL,
+          title VARCHAR(255) NOT NULL,
+          description TEXT,
+          type VARCHAR(50) DEFAULT 'call',
+          status VARCHAR(50) DEFAULT 'pending',
+          priority VARCHAR(50) DEFAULT 'normal',
+          due_at DATETIME NULL,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          INDEX idx_owner_status (owner_id, status),
+          FOREIGN KEY (owner_id) REFERENCES users1(id) ON DELETE CASCADE,
+          FOREIGN KEY (lead_id) REFERENCES crm_leads(id) ON DELETE SET NULL
+        ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+      `);
+    } catch (tableError) {
+      console.log("CRM tasks table check:", tableError.message);
+    }
+    
     const [rows] = await connection.execute(
       `SELECT id, title, type, status, priority, due_at, lead_id
        FROM crm_tasks
@@ -4089,6 +4160,31 @@ app.post("/api/crm/tasks", authenticate, async (req, res) => {
   let connection;
   try {
     connection = await pool.getConnection();
+    
+    // Ensure CRM tasks table exists
+    try {
+      await connection.execute(`
+        CREATE TABLE IF NOT EXISTS crm_tasks (
+          id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+          owner_id INT UNSIGNED NOT NULL,
+          lead_id INT UNSIGNED NULL,
+          title VARCHAR(255) NOT NULL,
+          description TEXT,
+          type VARCHAR(50) DEFAULT 'call',
+          status VARCHAR(50) DEFAULT 'pending',
+          priority VARCHAR(50) DEFAULT 'normal',
+          due_at DATETIME NULL,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          INDEX idx_owner_status (owner_id, status),
+          FOREIGN KEY (owner_id) REFERENCES users1(id) ON DELETE CASCADE,
+          FOREIGN KEY (lead_id) REFERENCES crm_leads(id) ON DELETE SET NULL
+        ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+      `);
+    } catch (tableError) {
+      console.log("CRM tasks table check:", tableError.message);
+    }
+    
     const [result] = await connection.execute(
       `INSERT INTO crm_tasks (owner_id, lead_id, title, description, type, priority, due_at)
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
@@ -4147,7 +4243,8 @@ app.patch("/api/crm/tasks/:id/status", authenticate, async (req, res) => {
 // Notifications
 app.get("/api/notifications", authenticate, async (req, res) => {
   let connection;
-  const limit = Math.min(parseInt(req.query.limit) || 50, 200);
+  // Ensure limit is a safe integer (max 200 for notifications)
+  const limit = Math.min(Math.max(parseInt(req.query.limit) || 50, 1), 200);
   try {
     connection = await pool.getConnection();
     const [rows] = await connection.execute(
@@ -4155,8 +4252,8 @@ app.get("/api/notifications", authenticate, async (req, res) => {
        FROM notifications
        WHERE user_id = ?
        ORDER BY created_at DESC
-       LIMIT ?`,
-      [req.user.id, limit]
+       LIMIT ${limit}`,
+      [req.user.id]
     );
     res.json(rows);
   } catch (error) {
@@ -4891,7 +4988,8 @@ app.get("/api/chats/:chatId/messages", authenticate, async (req, res) => {
     
     const userId = req.user.id;
     const chatId = parseInt(req.params.chatId);
-    const limit = parseInt(req.query.limit) || 50;
+    // Ensure limit is a safe integer (max 1000 to prevent abuse)
+    const limit = Math.min(Math.max(parseInt(req.query.limit) || 50, 1), 1000);
     const before = req.query.before ? parseInt(req.query.before) : null;
 
     // Verify user has access to this chat
@@ -4929,8 +5027,9 @@ app.get("/api/chats/:chatId/messages", authenticate, async (req, res) => {
       params.push(before);
     }
 
-    query += ` ORDER BY m.created_at DESC LIMIT ?`;
-    params.push(limit);
+    // MySQL doesn't support parameters in LIMIT, so we embed it directly
+    // limit is already parsed as integer, so it's safe
+    query += ` ORDER BY m.created_at DESC LIMIT ${limit}`;
 
     const [messages] = await connection.execute(query, params);
 
