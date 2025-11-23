@@ -475,6 +475,49 @@ async function testDatabaseConnection() {
       `);
     }
 
+    // Create chats table
+    const [chatTables] = await connection.execute("SHOW TABLES LIKE 'chats'");
+    if (chatTables.length === 0) {
+      console.log("Creating chats table...");
+      await connection.execute(`
+        CREATE TABLE chats (
+          id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+          property_id INT UNSIGNED NOT NULL,
+          participant1_id INT UNSIGNED NOT NULL,
+          participant2_id INT UNSIGNED NOT NULL,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          FOREIGN KEY (participant1_id) REFERENCES users1(id) ON DELETE CASCADE,
+          FOREIGN KEY (participant2_id) REFERENCES users1(id) ON DELETE CASCADE,
+          FOREIGN KEY (property_id) REFERENCES properties(id) ON DELETE CASCADE,
+          UNIQUE KEY unique_chat (property_id, participant1_id, participant2_id)
+        ) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci
+      `);
+    }
+
+    // Create messages table
+    const [messageTables] = await connection.execute("SHOW TABLES LIKE 'messages'");
+    if (messageTables.length === 0) {
+      console.log("Creating messages table...");
+      await connection.execute(`
+        CREATE TABLE messages (
+          id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+          chat_id INT UNSIGNED NOT NULL,
+          sender_id INT UNSIGNED NOT NULL,
+          content TEXT NOT NULL,
+          type VARCHAR(20) NOT NULL DEFAULT 'text',
+          sticker_id VARCHAR(255) DEFAULT NULL,
+          image_url VARCHAR(500) DEFAULT NULL,
+          is_read TINYINT(1) NOT NULL DEFAULT 0,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (chat_id) REFERENCES chats(id) ON DELETE CASCADE,
+          FOREIGN KEY (sender_id) REFERENCES users1(id) ON DELETE CASCADE,
+          INDEX idx_chat_created (chat_id, created_at DESC),
+          INDEX idx_sender (sender_id)
+        ) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci
+      `);
+    }
+
     // Setup admin user
     const adminEmail = process.env.ADMIN_EMAIL || "admin@example.com";
     const adminPassword = process.env.ADMIN_PASSWORD || "admin123";
@@ -4452,6 +4495,470 @@ app.get('/api/qr/status/:token', authenticate, async (req, res) => {
       success: false,
       error: 'Ошибка сервера' 
     });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
+// ==================== CHAT API ENDPOINTS ====================
+
+// Get all chats for current user
+app.get("/api/chats", authenticate, async (req, res) => {
+  let connection;
+  try {
+    connection = await pool.getConnection();
+    const userId = req.user.id;
+
+    const [chats] = await connection.execute(`
+      SELECT 
+        c.id,
+        c.property_id,
+        c.participant1_id,
+        c.participant2_id,
+        c.created_at,
+        c.updated_at,
+        p.title as property_title,
+        p.photos as property_photos,
+        u1.first_name as participant1_first_name,
+        u1.last_name as participant1_last_name,
+        u1.profile_picture as participant1_avatar,
+        u2.first_name as participant2_first_name,
+        u2.last_name as participant2_last_name,
+        u2.profile_picture as participant2_avatar,
+        (
+          SELECT COUNT(*) 
+          FROM messages m 
+          WHERE m.chat_id = c.id 
+          AND m.sender_id != ? 
+          AND m.is_read = 0
+        ) as unread_count,
+        (
+          SELECT JSON_OBJECT(
+            'id', m.id,
+            'chat_id', m.chat_id,
+            'sender_id', m.sender_id,
+            'sender_name', CONCAT(us.first_name, ' ', us.last_name),
+            'sender_avatar', us.profile_picture,
+            'content', m.content,
+            'type', m.type,
+            'sticker_id', m.sticker_id,
+            'image_url', m.image_url,
+            'is_read', m.is_read,
+            'created_at', m.created_at
+          )
+          FROM messages m
+          LEFT JOIN users1 us ON m.sender_id = us.id
+          WHERE m.chat_id = c.id
+          ORDER BY m.created_at DESC
+          LIMIT 1
+        ) as last_message
+      FROM chats c
+      LEFT JOIN properties p ON c.property_id = p.id
+      LEFT JOIN users1 u1 ON c.participant1_id = u1.id
+      LEFT JOIN users1 u2 ON c.participant2_id = u2.id
+      WHERE c.participant1_id = ? OR c.participant2_id = ?
+      ORDER BY c.updated_at DESC
+    `, [userId, userId, userId]);
+
+    const formattedChats = chats.map(chat => {
+      let propertyPhoto = null;
+      if (chat.property_photos) {
+        try {
+          const photos = JSON.parse(chat.property_photos);
+          if (Array.isArray(photos) && photos.length > 0) {
+            propertyPhoto = photos[0];
+          }
+        } catch (e) {
+          console.error("Error parsing property photos:", e);
+        }
+      }
+
+      let lastMessage = null;
+      if (chat.last_message) {
+        try {
+          lastMessage = JSON.parse(chat.last_message);
+        } catch (e) {
+          console.error("Error parsing last message:", e);
+        }
+      }
+
+      return {
+        id: chat.id,
+        property_id: chat.property_id,
+        property_title: chat.property_title,
+        property_photo: propertyPhoto,
+        participant1_id: chat.participant1_id,
+        participant1_name: `${chat.participant1_first_name || ''} ${chat.participant1_last_name || ''}`.trim(),
+        participant1_avatar: chat.participant1_avatar,
+        participant2_id: chat.participant2_id,
+        participant2_name: `${chat.participant2_first_name || ''} ${chat.participant2_last_name || ''}`.trim(),
+        participant2_avatar: chat.participant2_avatar,
+        last_message: lastMessage,
+        unread_count: chat.unread_count || 0,
+        created_at: chat.created_at,
+        updated_at: chat.updated_at
+      };
+    });
+
+    res.json(formattedChats);
+  } catch (error) {
+    console.error("Error fetching chats:", error);
+    res.status(500).json({ error: `Ошибка получения чатов: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
+// Get single chat
+app.get("/api/chats/:chatId", authenticate, async (req, res) => {
+  let connection;
+  try {
+    connection = await pool.getConnection();
+    const userId = req.user.id;
+    const chatId = parseInt(req.params.chatId);
+
+    const [chats] = await connection.execute(`
+      SELECT 
+        c.id,
+        c.property_id,
+        c.participant1_id,
+        c.participant2_id,
+        c.created_at,
+        c.updated_at,
+        p.title as property_title,
+        u1.first_name as participant1_first_name,
+        u1.last_name as participant1_last_name,
+        u1.profile_picture as participant1_avatar,
+        u2.first_name as participant2_first_name,
+        u2.last_name as participant2_last_name,
+        u2.profile_picture as participant2_avatar
+      FROM chats c
+      LEFT JOIN properties p ON c.property_id = p.id
+      LEFT JOIN users1 u1 ON c.participant1_id = u1.id
+      LEFT JOIN users1 u2 ON c.participant2_id = u2.id
+      WHERE c.id = ? AND (c.participant1_id = ? OR c.participant2_id = ?)
+    `, [chatId, userId, userId]);
+
+    if (chats.length === 0) {
+      return res.status(404).json({ error: "Чат не найден" });
+    }
+
+    const chat = chats[0];
+    res.json({
+      id: chat.id,
+      property_id: chat.property_id,
+      property_title: chat.property_title,
+      participant1_id: chat.participant1_id,
+      participant1_name: `${chat.participant1_first_name || ''} ${chat.participant1_last_name || ''}`.trim(),
+      participant1_avatar: chat.participant1_avatar,
+      participant2_id: chat.participant2_id,
+      participant2_name: `${chat.participant2_first_name || ''} ${chat.participant2_last_name || ''}`.trim(),
+      participant2_avatar: chat.participant2_avatar,
+      created_at: chat.created_at,
+      updated_at: chat.updated_at
+    });
+  } catch (error) {
+    console.error("Error fetching chat:", error);
+    res.status(500).json({ error: `Ошибка получения чата: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
+// Create or get existing chat
+app.post("/api/chats", authenticate, async (req, res) => {
+  let connection;
+  try {
+    connection = await pool.getConnection();
+    const userId = req.user.id;
+    const { property_id, other_user_id } = req.body;
+
+    if (!property_id || !other_user_id) {
+      return res.status(400).json({ error: "property_id и other_user_id обязательны" });
+    }
+
+    // Check if chat already exists
+    const [existingChats] = await connection.execute(`
+      SELECT id FROM chats 
+      WHERE property_id = ? 
+      AND ((participant1_id = ? AND participant2_id = ?) 
+        OR (participant1_id = ? AND participant2_id = ?))
+    `, [property_id, userId, other_user_id, other_user_id, userId]);
+
+    if (existingChats.length > 0) {
+      // Return existing chat
+      const chatId = existingChats[0].id;
+      const [chats] = await connection.execute(`
+        SELECT 
+          c.id,
+          c.property_id,
+          c.participant1_id,
+          c.participant2_id,
+          c.created_at,
+          c.updated_at,
+          p.title as property_title,
+          u1.first_name as participant1_first_name,
+          u1.last_name as participant1_last_name,
+          u1.profile_picture as participant1_avatar,
+          u2.first_name as participant2_first_name,
+          u2.last_name as participant2_last_name,
+          u2.profile_picture as participant2_avatar
+        FROM chats c
+        LEFT JOIN properties p ON c.property_id = p.id
+        LEFT JOIN users1 u1 ON c.participant1_id = u1.id
+        LEFT JOIN users1 u2 ON c.participant2_id = u2.id
+        WHERE c.id = ?
+      `, [chatId]);
+
+      const chat = chats[0];
+      return res.json({
+        id: chat.id,
+        property_id: chat.property_id,
+        property_title: chat.property_title,
+        participant1_id: chat.participant1_id,
+        participant1_name: `${chat.participant1_first_name || ''} ${chat.participant1_last_name || ''}`.trim(),
+        participant1_avatar: chat.participant1_avatar,
+        participant2_id: chat.participant2_id,
+        participant2_name: `${chat.participant2_first_name || ''} ${chat.participant2_last_name || ''}`.trim(),
+        participant2_avatar: chat.participant2_avatar,
+        created_at: chat.created_at,
+        updated_at: chat.updated_at
+      });
+    }
+
+    // Create new chat
+    const [result] = await connection.execute(`
+      INSERT INTO chats (property_id, participant1_id, participant2_id)
+      VALUES (?, ?, ?)
+    `, [property_id, userId, other_user_id]);
+
+    const chatId = result.insertId;
+
+    const [chats] = await connection.execute(`
+      SELECT 
+        c.id,
+        c.property_id,
+        c.participant1_id,
+        c.participant2_id,
+        c.created_at,
+        c.updated_at,
+        p.title as property_title,
+        u1.first_name as participant1_first_name,
+        u1.last_name as participant1_last_name,
+        u1.profile_picture as participant1_avatar,
+        u2.first_name as participant2_first_name,
+        u2.last_name as participant2_last_name,
+        u2.profile_picture as participant2_avatar
+      FROM chats c
+      LEFT JOIN properties p ON c.property_id = p.id
+      LEFT JOIN users1 u1 ON c.participant1_id = u1.id
+      LEFT JOIN users1 u2 ON c.participant2_id = u2.id
+      WHERE c.id = ?
+    `, [chatId]);
+
+    const chat = chats[0];
+    res.status(201).json({
+      id: chat.id,
+      property_id: chat.property_id,
+      property_title: chat.property_title,
+      participant1_id: chat.participant1_id,
+      participant1_name: `${chat.participant1_first_name || ''} ${chat.participant1_last_name || ''}`.trim(),
+      participant1_avatar: chat.participant1_avatar,
+      participant2_id: chat.participant2_id,
+      participant2_name: `${chat.participant2_first_name || ''} ${chat.participant2_last_name || ''}`.trim(),
+      participant2_avatar: chat.participant2_avatar,
+      created_at: chat.created_at,
+      updated_at: chat.updated_at
+    });
+  } catch (error) {
+    console.error("Error creating chat:", error);
+    res.status(500).json({ error: `Ошибка создания чата: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
+// Get messages for a chat
+app.get("/api/chats/:chatId/messages", authenticate, async (req, res) => {
+  let connection;
+  try {
+    connection = await pool.getConnection();
+    const userId = req.user.id;
+    const chatId = parseInt(req.params.chatId);
+    const limit = parseInt(req.query.limit) || 50;
+    const before = req.query.before ? parseInt(req.query.before) : null;
+
+    // Verify user has access to this chat
+    const [chatCheck] = await connection.execute(`
+      SELECT id FROM chats 
+      WHERE id = ? AND (participant1_id = ? OR participant2_id = ?)
+    `, [chatId, userId, userId]);
+
+    if (chatCheck.length === 0) {
+      return res.status(403).json({ error: "Нет доступа к этому чату" });
+    }
+
+    let query = `
+      SELECT 
+        m.id,
+        m.chat_id,
+        m.sender_id,
+        m.content,
+        m.type,
+        m.sticker_id,
+        m.image_url,
+        m.is_read,
+        m.created_at,
+        u.first_name as sender_first_name,
+        u.last_name as sender_last_name,
+        u.profile_picture as sender_avatar
+      FROM messages m
+      LEFT JOIN users1 u ON m.sender_id = u.id
+      WHERE m.chat_id = ?
+    `;
+    const params = [chatId];
+
+    if (before) {
+      query += ` AND m.id < ?`;
+      params.push(before);
+    }
+
+    query += ` ORDER BY m.created_at DESC LIMIT ?`;
+    params.push(limit);
+
+    const [messages] = await connection.execute(query, params);
+
+    const formattedMessages = messages.map(msg => ({
+      id: msg.id,
+      chat_id: msg.chat_id,
+      sender_id: msg.sender_id,
+      sender_name: `${msg.sender_first_name || ''} ${msg.sender_last_name || ''}`.trim(),
+      sender_avatar: msg.sender_avatar,
+      content: msg.content,
+      type: msg.type,
+      sticker_id: msg.sticker_id,
+      image_url: msg.image_url,
+      is_read: msg.is_read,
+      created_at: msg.created_at
+    }));
+
+    res.json(formattedMessages);
+  } catch (error) {
+    console.error("Error fetching messages:", error);
+    res.status(500).json({ error: `Ошибка получения сообщений: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
+// Send a message
+app.post("/api/chats/:chatId/messages", authenticate, async (req, res) => {
+  let connection;
+  try {
+    connection = await pool.getConnection();
+    const userId = req.user.id;
+    const chatId = parseInt(req.params.chatId);
+    const { content, type = 'text', sticker_id, image_url } = req.body;
+
+    // Verify user has access to this chat
+    const [chatCheck] = await connection.execute(`
+      SELECT id FROM chats 
+      WHERE id = ? AND (participant1_id = ? OR participant2_id = ?)
+    `, [chatId, userId, userId]);
+
+    if (chatCheck.length === 0) {
+      return res.status(403).json({ error: "Нет доступа к этому чату" });
+    }
+
+    if (!content && type !== 'sticker' && !image_url) {
+      return res.status(400).json({ error: "Содержимое сообщения обязательно" });
+    }
+
+    const messageContent = content || (type === 'sticker' ? '🎨' : '');
+
+    const [result] = await connection.execute(`
+      INSERT INTO messages (chat_id, sender_id, content, type, sticker_id, image_url)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `, [chatId, userId, messageContent, type, sticker_id || null, image_url || null]);
+
+    // Update chat updated_at
+    await connection.execute(`
+      UPDATE chats SET updated_at = NOW() WHERE id = ?
+    `, [chatId]);
+
+    // Get the created message with user info
+    const [messages] = await connection.execute(`
+      SELECT 
+        m.id,
+        m.chat_id,
+        m.sender_id,
+        m.content,
+        m.type,
+        m.sticker_id,
+        m.image_url,
+        m.is_read,
+        m.created_at,
+        u.first_name as sender_first_name,
+        u.last_name as sender_last_name,
+        u.profile_picture as sender_avatar
+      FROM messages m
+      LEFT JOIN users1 u ON m.sender_id = u.id
+      WHERE m.id = ?
+    `, [result.insertId]);
+
+    const msg = messages[0];
+    const formattedMessage = {
+      id: msg.id,
+      chat_id: msg.chat_id,
+      sender_id: msg.sender_id,
+      sender_name: `${msg.sender_first_name || ''} ${msg.sender_last_name || ''}`.trim(),
+      sender_avatar: msg.sender_avatar,
+      content: msg.content,
+      type: msg.type,
+      sticker_id: msg.sticker_id,
+      image_url: msg.image_url,
+      is_read: msg.is_read,
+      created_at: msg.created_at
+    };
+
+    res.status(201).json(formattedMessage);
+  } catch (error) {
+    console.error("Error sending message:", error);
+    res.status(500).json({ error: `Ошибка отправки сообщения: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
+// Mark messages as read
+app.post("/api/chats/:chatId/read", authenticate, async (req, res) => {
+  let connection;
+  try {
+    connection = await pool.getConnection();
+    const userId = req.user.id;
+    const chatId = parseInt(req.params.chatId);
+
+    // Verify user has access to this chat
+    const [chatCheck] = await connection.execute(`
+      SELECT id FROM chats 
+      WHERE id = ? AND (participant1_id = ? OR participant2_id = ?)
+    `, [chatId, userId, userId]);
+
+    if (chatCheck.length === 0) {
+      return res.status(403).json({ error: "Нет доступа к этому чату" });
+    }
+
+    // Mark all messages from other users as read
+    await connection.execute(`
+      UPDATE messages 
+      SET is_read = 1 
+      WHERE chat_id = ? AND sender_id != ?
+    `, [chatId, userId]);
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error("Error marking messages as read:", error);
+    res.status(500).json({ error: `Ошибка отметки сообщений: ${error.message}` });
   } finally {
     if (connection) connection.release();
   }
