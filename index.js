@@ -4701,7 +4701,13 @@ app.get("/api/chats", authenticate, async (req, res) => {
       let propertyPhoto = null;
       if (chat.property_photos) {
         try {
-          const photos = JSON.parse(chat.property_photos);
+          // Check if it's already an array/object or a string
+          let photos;
+          if (typeof chat.property_photos === 'string') {
+            photos = JSON.parse(chat.property_photos);
+          } else {
+            photos = chat.property_photos;
+          }
           if (Array.isArray(photos) && photos.length > 0) {
             propertyPhoto = photos[0];
           }
@@ -4713,7 +4719,13 @@ app.get("/api/chats", authenticate, async (req, res) => {
       let lastMessage = null;
       if (chat.last_message) {
         try {
-          lastMessage = JSON.parse(chat.last_message);
+          // Check if it's already an object or a string
+          if (typeof chat.last_message === 'string') {
+            lastMessage = JSON.parse(chat.last_message);
+          } else {
+            // Already an object from JSON_OBJECT
+            lastMessage = chat.last_message;
+          }
         } catch (e) {
           console.error("Error parsing last message:", e);
         }
