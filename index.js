@@ -5705,7 +5705,7 @@ app.get("/api/groups", authenticate, async (req, res) => {
     // Ensure tables exist
     try {
       await connection.execute(`
-        CREATE TABLE IF NOT EXISTS groups (
+        CREATE TABLE IF NOT EXISTS \`groups\` (
           id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
           name VARCHAR(255) NOT NULL,
           description TEXT,
@@ -5722,7 +5722,7 @@ app.get("/api/groups", authenticate, async (req, res) => {
       `);
       
       await connection.execute(`
-        CREATE TABLE IF NOT EXISTS group_members (
+        CREATE TABLE IF NOT EXISTS \`group_members\` (
           id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
           group_id INT UNSIGNED NOT NULL,
           user_id INT UNSIGNED NOT NULL,
@@ -5731,7 +5731,7 @@ app.get("/api/groups", authenticate, async (req, res) => {
           UNIQUE KEY unique_group_user (group_id, user_id),
           INDEX idx_group (group_id),
           INDEX idx_user (user_id),
-          FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE,
+          FOREIGN KEY (group_id) REFERENCES \`groups\`(id) ON DELETE CASCADE,
           FOREIGN KEY (user_id) REFERENCES users1(id) ON DELETE CASCADE
         ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
       `);
@@ -5744,15 +5744,15 @@ app.get("/api/groups", authenticate, async (req, res) => {
              u.first_name as creator_first_name,
              u.last_name as creator_last_name,
              COUNT(gm.user_id) as member_count
-      FROM groups g
+      FROM \`groups\` g
       LEFT JOIN users1 u ON g.creator_id = u.id
-      LEFT JOIN group_members gm ON g.id = gm.group_id
+      LEFT JOIN \`group_members\` gm ON g.id = gm.group_id
     `;
     const params = [];
     
     if (type === 'my') {
       query += ` WHERE EXISTS (
-        SELECT 1 FROM group_members gm2 
+        SELECT 1 FROM \`group_members\` gm2 
         WHERE gm2.group_id = g.id AND gm2.user_id = ?
       )`;
       params.push(userId);
@@ -5773,7 +5773,7 @@ app.get("/api/groups", authenticate, async (req, res) => {
     // Check if user is member of each group
     for (let group of groups) {
       const [members] = await connection.execute(
-        "SELECT role FROM group_members WHERE group_id = ? AND user_id = ?",
+        "SELECT role FROM \`group_members\` WHERE group_id = ? AND user_id = ?",
         [group.id, userId]
       );
       group.is_member = members.length > 0;
@@ -5803,7 +5803,7 @@ app.post("/api/groups", authenticate, async (req, res) => {
     // Ensure tables exist
     try {
       await connection.execute(`
-        CREATE TABLE IF NOT EXISTS groups (
+        CREATE TABLE IF NOT EXISTS \`groups\` (
           id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
           name VARCHAR(255) NOT NULL,
           description TEXT,
@@ -5820,7 +5820,7 @@ app.post("/api/groups", authenticate, async (req, res) => {
       `);
       
       await connection.execute(`
-        CREATE TABLE IF NOT EXISTS group_members (
+        CREATE TABLE IF NOT EXISTS \`group_members\` (
           id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
           group_id INT UNSIGNED NOT NULL,
           user_id INT UNSIGNED NOT NULL,
@@ -5829,7 +5829,7 @@ app.post("/api/groups", authenticate, async (req, res) => {
           UNIQUE KEY unique_group_user (group_id, user_id),
           INDEX idx_group (group_id),
           INDEX idx_user (user_id),
-          FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE,
+          FOREIGN KEY (group_id) REFERENCES \`groups\`(id) ON DELETE CASCADE,
           FOREIGN KEY (user_id) REFERENCES users1(id) ON DELETE CASCADE
         ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
       `);
@@ -5838,7 +5838,7 @@ app.post("/api/groups", authenticate, async (req, res) => {
     }
     
     const [result] = await connection.execute(
-      `INSERT INTO groups (name, description, creator_id, is_public, max_members)
+      `INSERT INTO \`groups\` (name, description, creator_id, is_public, max_members)
        VALUES (?, ?, ?, ?, ?)`,
       [
         name.trim(),
@@ -5851,7 +5851,7 @@ app.post("/api/groups", authenticate, async (req, res) => {
     
     // Add creator as admin
     await connection.execute(
-      `INSERT INTO group_members (group_id, user_id, role)
+      `INSERT INTO \`group_members\` (group_id, user_id, role)
        VALUES (?, ?, 'admin')`,
       [result.insertId, req.user.id]
     );
@@ -5861,9 +5861,9 @@ app.post("/api/groups", authenticate, async (req, res) => {
               u.first_name as creator_first_name,
               u.last_name as creator_last_name,
               COUNT(gm.user_id) as member_count
-       FROM groups g
+       FROM \`groups\` g
        LEFT JOIN users1 u ON g.creator_id = u.id
-       LEFT JOIN group_members gm ON g.id = gm.group_id
+       LEFT JOIN \`group_members\` gm ON g.id = gm.group_id
        WHERE g.id = ?
        GROUP BY g.id`,
       [result.insertId]
@@ -5895,9 +5895,9 @@ app.get("/api/groups/:id", authenticate, async (req, res) => {
               u.first_name as creator_first_name,
               u.last_name as creator_last_name,
               COUNT(gm.user_id) as member_count
-       FROM groups g
+       FROM \`groups\` g
        LEFT JOIN users1 u ON g.creator_id = u.id
-       LEFT JOIN group_members gm ON g.id = gm.group_id
+       LEFT JOIN \`group_members\` gm ON g.id = gm.group_id
        WHERE g.id = ?
        GROUP BY g.id`,
       [groupId]
@@ -5911,7 +5911,7 @@ app.get("/api/groups/:id", authenticate, async (req, res) => {
     
     // Check membership
     const [members] = await connection.execute(
-      "SELECT role FROM group_members WHERE group_id = ? AND user_id = ?",
+      "SELECT role FROM \`group_members\` WHERE group_id = ? AND user_id = ?",
       [groupId, userId]
     );
     group.is_member = members.length > 0;
@@ -5920,7 +5920,7 @@ app.get("/api/groups/:id", authenticate, async (req, res) => {
     // Get members list
     const [membersList] = await connection.execute(
       `SELECT gm.*, u.id as user_id, u.first_name, u.last_name, u.profile_picture
-       FROM group_members gm
+       FROM \`group_members\` gm
        JOIN users1 u ON gm.user_id = u.id
        WHERE gm.group_id = ?
        ORDER BY gm.joined_at ASC`,
@@ -5947,7 +5947,7 @@ app.post("/api/groups/:id/join", authenticate, async (req, res) => {
     
     // Check if group exists and is public
     const [groups] = await connection.execute(
-      "SELECT is_public, max_members FROM groups WHERE id = ?",
+      "SELECT is_public, max_members FROM \`groups\` WHERE id = ?",
       [groupId]
     );
     
@@ -5963,7 +5963,7 @@ app.post("/api/groups/:id/join", authenticate, async (req, res) => {
     
     // Check current member count
     const [memberCount] = await connection.execute(
-      "SELECT COUNT(*) as count FROM group_members WHERE group_id = ?",
+      "SELECT COUNT(*) as count FROM \`group_members\` WHERE group_id = ?",
       [groupId]
     );
     
@@ -5973,7 +5973,7 @@ app.post("/api/groups/:id/join", authenticate, async (req, res) => {
     
     // Check if already member
     const [existing] = await connection.execute(
-      "SELECT id FROM group_members WHERE group_id = ? AND user_id = ?",
+      "SELECT id FROM \`group_members\` WHERE group_id = ? AND user_id = ?",
       [groupId, userId]
     );
     
@@ -5983,7 +5983,7 @@ app.post("/api/groups/:id/join", authenticate, async (req, res) => {
     
     // Add member
     await connection.execute(
-      `INSERT INTO group_members (group_id, user_id, role)
+      `INSERT INTO \`group_members\` (group_id, user_id, role)
        VALUES (?, ?, 'member')`,
       [groupId, userId]
     );
@@ -6007,7 +6007,7 @@ app.post("/api/groups/:id/leave", authenticate, async (req, res) => {
     
     // Check if member
     const [members] = await connection.execute(
-      "SELECT role FROM group_members WHERE group_id = ? AND user_id = ?",
+      "SELECT role FROM \`group_members\` WHERE group_id = ? AND user_id = ?",
       [groupId, userId]
     );
     
@@ -6017,7 +6017,7 @@ app.post("/api/groups/:id/leave", authenticate, async (req, res) => {
     
     // Don't allow creator to leave (should delete group instead)
     const [groups] = await connection.execute(
-      "SELECT creator_id FROM groups WHERE id = ?",
+      "SELECT creator_id FROM \`groups\` WHERE id = ?",
       [groupId]
     );
     
@@ -6026,7 +6026,7 @@ app.post("/api/groups/:id/leave", authenticate, async (req, res) => {
     }
     
     await connection.execute(
-      "DELETE FROM group_members WHERE group_id = ? AND user_id = ?",
+      "DELETE FROM \`group_members\` WHERE group_id = ? AND user_id = ?",
       [groupId, userId]
     );
     
@@ -6048,7 +6048,7 @@ app.delete("/api/groups/:id", authenticate, async (req, res) => {
     
     // Verify ownership
     const [groups] = await connection.execute(
-      "SELECT creator_id FROM groups WHERE id = ?",
+      "SELECT creator_id FROM \`groups\` WHERE id = ?",
       [groupId]
     );
     
@@ -6060,7 +6060,7 @@ app.delete("/api/groups/:id", authenticate, async (req, res) => {
       return res.status(403).json({ error: "Только создатель может удалить группу" });
     }
     
-    await connection.execute("DELETE FROM groups WHERE id = ?", [groupId]);
+    await connection.execute("DELETE FROM \`groups\` WHERE id = ?", [groupId]);
     
     res.json({ message: "Группа удалена" });
   } catch (error) {
