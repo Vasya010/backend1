@@ -5217,6 +5217,340 @@ app.post("/api/chats/:chatId/read", authenticate, async (req, res) => {
   }
 });
 
+// ==================== BOT API ENDPOINTS ====================
+
+// Get all bots for current user
+app.get("/api/bots", authenticate, async (req, res) => {
+  let connection;
+  try {
+    connection = await pool.getConnection();
+    
+    // Ensure bots table exists
+    try {
+      await connection.execute(`
+        CREATE TABLE IF NOT EXISTS bots (
+          id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+          owner_id INT UNSIGNED NOT NULL,
+          name VARCHAR(255) NOT NULL,
+          username VARCHAR(255) NOT NULL,
+          token VARCHAR(500) NOT NULL,
+          description TEXT,
+          webhook_url VARCHAR(500),
+          is_active TINYINT(1) DEFAULT 1,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          UNIQUE KEY unique_username (username),
+          UNIQUE KEY unique_token (token),
+          INDEX idx_owner (owner_id),
+          FOREIGN KEY (owner_id) REFERENCES users1(id) ON DELETE CASCADE
+        ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+      `);
+    } catch (tableError) {
+      console.log("Bots table check:", tableError.message);
+    }
+    
+    const [bots] = await connection.execute(
+      `SELECT id, name, username, description, is_active, created_at, updated_at
+       FROM bots
+       WHERE owner_id = ?
+       ORDER BY created_at DESC`,
+      [req.user.id]
+    );
+    
+    res.json(bots);
+  } catch (error) {
+    console.error("Error fetching bots:", error);
+    res.status(500).json({ error: `Не удалось получить список ботов: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
+// Create new bot
+app.post("/api/bots", authenticate, async (req, res) => {
+  let connection;
+  try {
+    connection = await pool.getConnection();
+    
+    // Ensure bots table exists
+    try {
+      await connection.execute(`
+        CREATE TABLE IF NOT EXISTS bots (
+          id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+          owner_id INT UNSIGNED NOT NULL,
+          name VARCHAR(255) NOT NULL,
+          username VARCHAR(255) NOT NULL,
+          token VARCHAR(500) NOT NULL,
+          description TEXT,
+          webhook_url VARCHAR(500),
+          is_active TINYINT(1) DEFAULT 1,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          UNIQUE KEY unique_username (username),
+          UNIQUE KEY unique_token (token),
+          INDEX idx_owner (owner_id),
+          FOREIGN KEY (owner_id) REFERENCES users1(id) ON DELETE CASCADE
+        ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+      `);
+    } catch (tableError) {
+      console.log("Bots table check:", tableError.message);
+    }
+    
+    const { name, description } = req.body;
+    
+    if (!name || !name.trim()) {
+      return res.status(400).json({ error: "Имя бота обязательно" });
+    }
+    
+    // Generate username from name (add _bot suffix if not present)
+    let username = name.trim().toLowerCase().replace(/\s+/g, '_');
+    if (!username.endsWith('_bot')) {
+      username += '_bot';
+    }
+    
+    // Generate token (format: BOT_TOKEN_PREFIX:ACTUAL_TOKEN)
+    // In real implementation, this would be obtained from Telegram BotFather
+    const tokenPrefix = Math.random().toString(36).substring(2, 15);
+    const tokenSuffix = Math.random().toString(36).substring(2, 15);
+    const token = `${tokenPrefix}:${tokenSuffix}`;
+    
+    // Check if username already exists
+    const [existing] = await connection.execute(
+      "SELECT id FROM bots WHERE username = ?",
+      [username]
+    );
+    
+    if (existing.length > 0) {
+      // Add random suffix if username exists
+      username = `${username}_${Math.random().toString(36).substring(2, 8)}`;
+    }
+    
+    // Create bot
+    const [result] = await connection.execute(
+      `INSERT INTO bots (owner_id, name, username, token, description, webhook_url)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [
+        req.user.id,
+        name.trim(),
+        username,
+        token,
+        description?.trim() || null,
+        `${publicDomain}/api/bots/${username}/webhook`
+      ]
+    );
+    
+    const [bots] = await connection.execute(
+      "SELECT * FROM bots WHERE id = ?",
+      [result.insertId]
+    );
+    
+    const bot = bots[0];
+    
+    // Bot link format: https://t.me/username
+    const botLink = `https://t.me/${username}`;
+    
+    res.status(201).json({
+      ...bot,
+      bot_link: botLink,
+      message: "Бот успешно создан! Используйте токен для настройки через Telegram Bot API."
+    });
+  } catch (error) {
+    console.error("Error creating bot:", error);
+    res.status(500).json({ error: `Не удалось создать бота: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
+// Get single bot
+app.get("/api/bots/:id", authenticate, async (req, res) => {
+  let connection;
+  try {
+    connection = await pool.getConnection();
+    const botId = parseInt(req.params.id);
+    
+    const [bots] = await connection.execute(
+      `SELECT id, name, username, token, description, webhook_url, is_active, created_at, updated_at
+       FROM bots
+       WHERE id = ? AND owner_id = ?`,
+      [botId, req.user.id]
+    );
+    
+    if (bots.length === 0) {
+      return res.status(404).json({ error: "Бот не найден" });
+    }
+    
+    const bot = bots[0];
+    const botLink = `https://t.me/${bot.username}`;
+    
+    res.json({
+      ...bot,
+      bot_link: botLink
+    });
+  } catch (error) {
+    console.error("Error fetching bot:", error);
+    res.status(500).json({ error: `Не удалось получить бота: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
+// Update bot
+app.patch("/api/bots/:id", authenticate, async (req, res) => {
+  let connection;
+  try {
+    connection = await pool.getConnection();
+    const botId = parseInt(req.params.id);
+    const { name, description, is_active } = req.body;
+    
+    // Verify ownership
+    const [bots] = await connection.execute(
+      "SELECT id FROM bots WHERE id = ? AND owner_id = ?",
+      [botId, req.user.id]
+    );
+    
+    if (bots.length === 0) {
+      return res.status(404).json({ error: "Бот не найден" });
+    }
+    
+    const updates = [];
+    const params = [];
+    
+    if (name !== undefined) {
+      updates.push("name = ?");
+      params.push(name.trim());
+    }
+    
+    if (description !== undefined) {
+      updates.push("description = ?");
+      params.push(description?.trim() || null);
+    }
+    
+    if (is_active !== undefined) {
+      updates.push("is_active = ?");
+      params.push(is_active ? 1 : 0);
+    }
+    
+    if (updates.length === 0) {
+      return res.status(400).json({ error: "Нет данных для обновления" });
+    }
+    
+    params.push(botId);
+    
+    await connection.execute(
+      `UPDATE bots SET ${updates.join(", ")}, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+      params
+    );
+    
+    const [updatedBots] = await connection.execute(
+      "SELECT * FROM bots WHERE id = ?",
+      [botId]
+    );
+    
+    res.json(updatedBots[0]);
+  } catch (error) {
+    console.error("Error updating bot:", error);
+    res.status(500).json({ error: `Не удалось обновить бота: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
+// Delete bot
+app.delete("/api/bots/:id", authenticate, async (req, res) => {
+  let connection;
+  try {
+    connection = await pool.getConnection();
+    const botId = parseInt(req.params.id);
+    
+    // Verify ownership
+    const [bots] = await connection.execute(
+      "SELECT id FROM bots WHERE id = ? AND owner_id = ?",
+      [botId, req.user.id]
+    );
+    
+    if (bots.length === 0) {
+      return res.status(404).json({ error: "Бот не найден" });
+    }
+    
+    await connection.execute("DELETE FROM bots WHERE id = ?", [botId]);
+    
+    res.json({ message: "Бот успешно удален" });
+  } catch (error) {
+    console.error("Error deleting bot:", error);
+    res.status(500).json({ error: `Не удалось удалить бота: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
+// Webhook endpoint for bot messages (will be called by Telegram)
+app.post("/api/bots/:username/webhook", async (req, res) => {
+  let connection;
+  try {
+    connection = await pool.getConnection();
+    const username = req.params.username;
+    
+    // Find bot by username
+    const [bots] = await connection.execute(
+      "SELECT * FROM bots WHERE username = ? AND is_active = 1",
+      [username]
+    );
+    
+    if (bots.length === 0) {
+      return res.status(404).json({ error: "Бот не найден или неактивен" });
+    }
+    
+    const bot = bots[0];
+    const update = req.body;
+    
+    // Handle Telegram webhook update
+    // This is where you would process messages from Telegram
+    // For now, we'll just log it and store the message
+    
+    if (update.message) {
+      const message = update.message;
+      const chatId = message.chat.id;
+      const text = message.text;
+      
+      // Store message in bot_messages table
+      try {
+        await connection.execute(`
+          CREATE TABLE IF NOT EXISTS bot_messages (
+            id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+            bot_id INT UNSIGNED NOT NULL,
+            user_id INT UNSIGNED NOT NULL,
+            message_text TEXT,
+            response_text TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (bot_id) REFERENCES bots(id) ON DELETE CASCADE,
+            FOREIGN KEY (user_id) REFERENCES users1(id) ON DELETE CASCADE,
+            INDEX idx_bot_user (bot_id, user_id)
+          ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+        `);
+        
+        // Find user by telegram chat_id or create a mapping
+        // For now, we'll use a placeholder
+        await connection.execute(
+          `INSERT INTO bot_messages (bot_id, user_id, message_text)
+           VALUES (?, ?, ?)`,
+          [bot.id, bot.owner_id, text]
+        );
+      } catch (msgError) {
+        console.error("Error storing bot message:", msgError);
+      }
+    }
+    
+    // Always respond 200 OK to Telegram
+    res.status(200).json({ ok: true });
+  } catch (error) {
+    console.error("Error processing bot webhook:", error);
+    res.status(200).json({ ok: true }); // Always respond OK to Telegram
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
 // Start Server
 app.listen(port, () => {
   console.log(`Server running on http://localhost:${port}`);
