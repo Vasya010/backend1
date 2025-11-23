@@ -19,7 +19,7 @@ const jwtSecret = process.env.JWT_SECRET || "your_jwt_secret_123";
 // Valid roles for validation444
 const VALID_ROLES = ['USER', 'ADMIN', 'SUPER_ADMIN', 'REALTOR'];
 
-// S3 Configuration
+// S3 Configuration111
 const s3Client = new S3Client({
   region: process.env.S3_REGION || "ru-1",
   endpoint: process.env.S3_ENDPOINT || "https://s3.twcstorage.ru",
