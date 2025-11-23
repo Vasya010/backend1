@@ -4507,6 +4507,45 @@ app.get("/api/chats", authenticate, async (req, res) => {
   let connection;
   try {
     connection = await pool.getConnection();
+    
+    // Ensure chats and messages tables exist
+    try {
+      await connection.execute(`
+        CREATE TABLE IF NOT EXISTS chats (
+          id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+          property_id INT UNSIGNED NOT NULL,
+          participant1_id INT UNSIGNED NOT NULL,
+          participant2_id INT UNSIGNED NOT NULL,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          FOREIGN KEY (participant1_id) REFERENCES users1(id) ON DELETE CASCADE,
+          FOREIGN KEY (participant2_id) REFERENCES users1(id) ON DELETE CASCADE,
+          FOREIGN KEY (property_id) REFERENCES properties(id) ON DELETE CASCADE,
+          UNIQUE KEY unique_chat (property_id, participant1_id, participant2_id)
+        ) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci
+      `);
+      
+      await connection.execute(`
+        CREATE TABLE IF NOT EXISTS messages (
+          id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+          chat_id INT UNSIGNED NOT NULL,
+          sender_id INT UNSIGNED NOT NULL,
+          content TEXT NOT NULL,
+          type VARCHAR(20) NOT NULL DEFAULT 'text',
+          sticker_id VARCHAR(255) DEFAULT NULL,
+          image_url VARCHAR(500) DEFAULT NULL,
+          is_read TINYINT(1) NOT NULL DEFAULT 0,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (chat_id) REFERENCES chats(id) ON DELETE CASCADE,
+          FOREIGN KEY (sender_id) REFERENCES users1(id) ON DELETE CASCADE,
+          INDEX idx_chat_created (chat_id, created_at DESC),
+          INDEX idx_sender (sender_id)
+        ) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci
+      `);
+    } catch (tableError) {
+      console.log("Tables check:", tableError.message);
+    }
+    
     const userId = req.user.id;
 
     const [chats] = await connection.execute(`
@@ -4614,6 +4653,27 @@ app.get("/api/chats/:chatId", authenticate, async (req, res) => {
   let connection;
   try {
     connection = await pool.getConnection();
+    
+    // Ensure chats table exists
+    try {
+      await connection.execute(`
+        CREATE TABLE IF NOT EXISTS chats (
+          id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+          property_id INT UNSIGNED NOT NULL,
+          participant1_id INT UNSIGNED NOT NULL,
+          participant2_id INT UNSIGNED NOT NULL,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          FOREIGN KEY (participant1_id) REFERENCES users1(id) ON DELETE CASCADE,
+          FOREIGN KEY (participant2_id) REFERENCES users1(id) ON DELETE CASCADE,
+          FOREIGN KEY (property_id) REFERENCES properties(id) ON DELETE CASCADE,
+          UNIQUE KEY unique_chat (property_id, participant1_id, participant2_id)
+        ) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci
+      `);
+    } catch (tableError) {
+      console.log("Chats table check:", tableError.message);
+    }
+    
     const userId = req.user.id;
     const chatId = parseInt(req.params.chatId);
 
@@ -4675,6 +4735,28 @@ app.post("/api/chats", authenticate, async (req, res) => {
 
     if (!property_id || !other_user_id) {
       return res.status(400).json({ error: "property_id и other_user_id обязательны" });
+    }
+
+    // Ensure chats table exists
+    try {
+      await connection.execute(`
+        CREATE TABLE IF NOT EXISTS chats (
+          id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+          property_id INT UNSIGNED NOT NULL,
+          participant1_id INT UNSIGNED NOT NULL,
+          participant2_id INT UNSIGNED NOT NULL,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          FOREIGN KEY (participant1_id) REFERENCES users1(id) ON DELETE CASCADE,
+          FOREIGN KEY (participant2_id) REFERENCES users1(id) ON DELETE CASCADE,
+          FOREIGN KEY (property_id) REFERENCES properties(id) ON DELETE CASCADE,
+          UNIQUE KEY unique_chat (property_id, participant1_id, participant2_id)
+        ) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci
+      `);
+    } catch (tableError) {
+      // Table might already exist or foreign key constraints might fail
+      // Continue anyway
+      console.log("Chats table check:", tableError.message);
     }
 
     // Check if chat already exists
@@ -4783,6 +4865,30 @@ app.get("/api/chats/:chatId/messages", authenticate, async (req, res) => {
   let connection;
   try {
     connection = await pool.getConnection();
+    
+    // Ensure messages table exists
+    try {
+      await connection.execute(`
+        CREATE TABLE IF NOT EXISTS messages (
+          id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+          chat_id INT UNSIGNED NOT NULL,
+          sender_id INT UNSIGNED NOT NULL,
+          content TEXT NOT NULL,
+          type VARCHAR(20) NOT NULL DEFAULT 'text',
+          sticker_id VARCHAR(255) DEFAULT NULL,
+          image_url VARCHAR(500) DEFAULT NULL,
+          is_read TINYINT(1) NOT NULL DEFAULT 0,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (chat_id) REFERENCES chats(id) ON DELETE CASCADE,
+          FOREIGN KEY (sender_id) REFERENCES users1(id) ON DELETE CASCADE,
+          INDEX idx_chat_created (chat_id, created_at DESC),
+          INDEX idx_sender (sender_id)
+        ) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci
+      `);
+    } catch (tableError) {
+      console.log("Messages table check:", tableError.message);
+    }
+    
     const userId = req.user.id;
     const chatId = parseInt(req.params.chatId);
     const limit = parseInt(req.query.limit) || 50;
@@ -4856,6 +4962,30 @@ app.post("/api/chats/:chatId/messages", authenticate, async (req, res) => {
   let connection;
   try {
     connection = await pool.getConnection();
+    
+    // Ensure messages table exists
+    try {
+      await connection.execute(`
+        CREATE TABLE IF NOT EXISTS messages (
+          id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+          chat_id INT UNSIGNED NOT NULL,
+          sender_id INT UNSIGNED NOT NULL,
+          content TEXT NOT NULL,
+          type VARCHAR(20) NOT NULL DEFAULT 'text',
+          sticker_id VARCHAR(255) DEFAULT NULL,
+          image_url VARCHAR(500) DEFAULT NULL,
+          is_read TINYINT(1) NOT NULL DEFAULT 0,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (chat_id) REFERENCES chats(id) ON DELETE CASCADE,
+          FOREIGN KEY (sender_id) REFERENCES users1(id) ON DELETE CASCADE,
+          INDEX idx_chat_created (chat_id, created_at DESC),
+          INDEX idx_sender (sender_id)
+        ) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci
+      `);
+    } catch (tableError) {
+      console.log("Messages table check:", tableError.message);
+    }
+    
     const userId = req.user.id;
     const chatId = parseInt(req.params.chatId);
     const { content, type = 'text', sticker_id, image_url } = req.body;
@@ -4935,6 +5065,30 @@ app.post("/api/chats/:chatId/read", authenticate, async (req, res) => {
   let connection;
   try {
     connection = await pool.getConnection();
+    
+    // Ensure messages table exists
+    try {
+      await connection.execute(`
+        CREATE TABLE IF NOT EXISTS messages (
+          id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+          chat_id INT UNSIGNED NOT NULL,
+          sender_id INT UNSIGNED NOT NULL,
+          content TEXT NOT NULL,
+          type VARCHAR(20) NOT NULL DEFAULT 'text',
+          sticker_id VARCHAR(255) DEFAULT NULL,
+          image_url VARCHAR(500) DEFAULT NULL,
+          is_read TINYINT(1) NOT NULL DEFAULT 0,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (chat_id) REFERENCES chats(id) ON DELETE CASCADE,
+          FOREIGN KEY (sender_id) REFERENCES users1(id) ON DELETE CASCADE,
+          INDEX idx_chat_created (chat_id, created_at DESC),
+          INDEX idx_sender (sender_id)
+        ) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci
+      `);
+    } catch (tableError) {
+      console.log("Messages table check:", tableError.message);
+    }
+    
     const userId = req.user.id;
     const chatId = parseInt(req.params.chatId);
 
