@@ -5346,13 +5346,13 @@ app.post("/api/bots", authenticate, async (req, res) => {
     
     const bot = bots[0];
     
-    // Bot link format: https://t.me/username
-    const botLink = `https://t.me/${username}`;
+    // Bot link for in-app usage
+    const botLink = `${publicDomain}/api/bots/${username}/chat`;
     
     res.status(201).json({
       ...bot,
       bot_link: botLink,
-      message: "Бот успешно создан! Используйте токен для настройки через Telegram Bot API."
+      message: "Бот успешно создан! Теперь вы можете использовать его в приложении."
     });
   } catch (error) {
     console.error("Error creating bot:", error);
@@ -5381,7 +5381,7 @@ app.get("/api/bots/:id", authenticate, async (req, res) => {
     }
     
     const bot = bots[0];
-    const botLink = `https://t.me/${bot.username}`;
+    const botLink = `${publicDomain}/api/bots/${bot.username}/chat`;
     
     res.json({
       ...bot,
@@ -5484,17 +5484,79 @@ app.delete("/api/bots/:id", authenticate, async (req, res) => {
   }
 });
 
-// Webhook endpoint for bot messages (will be called by Telegram)
-app.post("/api/bots/:username/webhook", async (req, res) => {
+// Get bot chat messages
+app.get("/api/bots/:botId/chat/messages", authenticate, async (req, res) => {
   let connection;
   try {
     connection = await pool.getConnection();
-    const username = req.params.username;
+    const botId = parseInt(req.params.botId);
+    const userId = req.user.id;
+    const limit = Math.min(Math.max(parseInt(req.query.limit) || 50, 1), 100);
     
-    // Find bot by username
+    // Verify bot exists and is active
     const [bots] = await connection.execute(
-      "SELECT * FROM bots WHERE username = ? AND is_active = 1",
-      [username]
+      "SELECT id FROM bots WHERE id = ? AND is_active = 1",
+      [botId]
+    );
+    
+    if (bots.length === 0) {
+      return res.status(404).json({ error: "Бот не найден или неактивен" });
+    }
+    
+    // Ensure bot_messages table exists
+    try {
+      await connection.execute(`
+        CREATE TABLE IF NOT EXISTS bot_messages (
+          id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+          bot_id INT UNSIGNED NOT NULL,
+          user_id INT UNSIGNED NOT NULL,
+          message_text TEXT,
+          response_text TEXT,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (bot_id) REFERENCES bots(id) ON DELETE CASCADE,
+          FOREIGN KEY (user_id) REFERENCES users1(id) ON DELETE CASCADE,
+          INDEX idx_bot_user (bot_id, user_id)
+        ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+      `);
+    } catch (tableError) {
+      console.log("Bot messages table check:", tableError.message);
+    }
+    
+    const [messages] = await connection.execute(
+      `SELECT id, message_text, response_text, created_at
+       FROM bot_messages
+       WHERE bot_id = ? AND user_id = ?
+       ORDER BY created_at DESC
+       LIMIT ${limit}`,
+      [botId, userId]
+    );
+    
+    res.json(messages.reverse()); // Return in chronological order
+  } catch (error) {
+    console.error("Error fetching bot messages:", error);
+    res.status(500).json({ error: `Ошибка получения сообщений: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
+// Send message to bot
+app.post("/api/bots/:botId/chat/messages", authenticate, async (req, res) => {
+  let connection;
+  try {
+    connection = await pool.getConnection();
+    const botId = parseInt(req.params.botId);
+    const userId = req.user.id;
+    const { message } = req.body;
+    
+    if (!message || !message.trim()) {
+      return res.status(400).json({ error: "Сообщение не может быть пустым" });
+    }
+    
+    // Verify bot exists and is active
+    const [bots] = await connection.execute(
+      "SELECT * FROM bots WHERE id = ? AND is_active = 1",
+      [botId]
     );
     
     if (bots.length === 0) {
@@ -5502,50 +5564,65 @@ app.post("/api/bots/:username/webhook", async (req, res) => {
     }
     
     const bot = bots[0];
-    const update = req.body;
     
-    // Handle Telegram webhook update
-    // This is where you would process messages from Telegram
-    // For now, we'll just log it and store the message
-    
-    if (update.message) {
-      const message = update.message;
-      const chatId = message.chat.id;
-      const text = message.text;
-      
-      // Store message in bot_messages table
-      try {
-        await connection.execute(`
-          CREATE TABLE IF NOT EXISTS bot_messages (
-            id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
-            bot_id INT UNSIGNED NOT NULL,
-            user_id INT UNSIGNED NOT NULL,
-            message_text TEXT,
-            response_text TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (bot_id) REFERENCES bots(id) ON DELETE CASCADE,
-            FOREIGN KEY (user_id) REFERENCES users1(id) ON DELETE CASCADE,
-            INDEX idx_bot_user (bot_id, user_id)
-          ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
-        `);
-        
-        // Find user by telegram chat_id or create a mapping
-        // For now, we'll use a placeholder
-        await connection.execute(
-          `INSERT INTO bot_messages (bot_id, user_id, message_text)
-           VALUES (?, ?, ?)`,
-          [bot.id, bot.owner_id, text]
-        );
-      } catch (msgError) {
-        console.error("Error storing bot message:", msgError);
-      }
+    // Ensure bot_messages table exists
+    try {
+      await connection.execute(`
+        CREATE TABLE IF NOT EXISTS bot_messages (
+          id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+          bot_id INT UNSIGNED NOT NULL,
+          user_id INT UNSIGNED NOT NULL,
+          message_text TEXT,
+          response_text TEXT,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (bot_id) REFERENCES bots(id) ON DELETE CASCADE,
+          FOREIGN KEY (user_id) REFERENCES users1(id) ON DELETE CASCADE,
+          INDEX idx_bot_user (bot_id, user_id)
+        ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+      `);
+    } catch (tableError) {
+      console.log("Bot messages table check:", tableError.message);
     }
     
-    // Always respond 200 OK to Telegram
-    res.status(200).json({ ok: true });
+    // Store user message
+    const [result] = await connection.execute(
+      `INSERT INTO bot_messages (bot_id, user_id, message_text)
+       VALUES (?, ?, ?)`,
+      [botId, userId, message.trim()]
+    );
+    
+    // Generate bot response (simple echo for now, can be customized)
+    let response = "Привет! Я бот ${bot.name}. Вы написали: ${message.trim()}";
+    
+    // Simple bot logic - can be extended
+    const lowerMessage = message.toLowerCase().trim();
+    if (lowerMessage.includes('привет') || lowerMessage.includes('здравствуй')) {
+      response = "Привет! Чем могу помочь?";
+    } else if (lowerMessage.includes('помощь') || lowerMessage.includes('help')) {
+      response = "Я могу помочь вам с информацией о недвижимости. Что вас интересует?";
+    } else if (lowerMessage.includes('цена') || lowerMessage.includes('стоимость')) {
+      response = "Для получения информации о ценах, пожалуйста, укажите интересующий вас объект недвижимости.";
+    } else if (lowerMessage.includes('контакт') || lowerMessage.includes('связаться')) {
+      response = "Вы можете связаться с нами через чат с куратором или по телефону, указанному в объявлении.";
+    } else {
+      response = "Спасибо за сообщение! Я передам ваш запрос владельцу бота.";
+    }
+    
+    // Store bot response
+    await connection.execute(
+      `UPDATE bot_messages SET response_text = ? WHERE id = ?`,
+      [response, result.insertId]
+    );
+    
+    const [updatedMessages] = await connection.execute(
+      "SELECT * FROM bot_messages WHERE id = ?",
+      [result.insertId]
+    );
+    
+    res.status(201).json(updatedMessages[0]);
   } catch (error) {
-    console.error("Error processing bot webhook:", error);
-    res.status(200).json({ ok: true }); // Always respond OK to Telegram
+    console.error("Error sending message to bot:", error);
+    res.status(500).json({ error: `Ошибка отправки сообщения: ${error.message}` });
   } finally {
     if (connection) connection.release();
   }
