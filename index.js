@@ -8,6 +8,7 @@ const { S3Client, PutObjectCommand, DeleteObjectCommand } = require("@aws-sdk/cl
 const path = require("path");
 const QRCode = require("qrcode");
 const { v4: uuidv4 } = require("uuid");
+const axios = require("axios");
 require("dotenv").config();
 
 const app = express();
