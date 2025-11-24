@@ -32,8 +32,170 @@ const s3Client = new S3Client({
 
 const bucketName = process.env.S3_BUCKET || "a2c31109-3cf2c97b-aca1-42b0-a822-3e0ade279447";
 
+// ==================== UTILITY FUNCTIONS ====================
 
+/**
+ * Стандартизированные ответы API для успешных операций
+ */
+const sendSuccess = (res, message, data = null, statusCode = 200) => {
+  const response = { success: true, message };
+  if (data !== null) {
+    response.data = data;
+  }
+  return res.status(statusCode).json(response);
+};
 
+/**
+ * Стандартизированные ответы API для ошибок
+ */
+const sendError = (res, message, statusCode = 400, details = null) => {
+  const response = { 
+    success: false, 
+    error: message,
+    timestamp: new Date().toISOString()
+  };
+  if (details && process.env.NODE_ENV === 'development') {
+    response.details = details;
+  }
+  return res.status(statusCode).json(response);
+};
+
+/**
+ * Валидация email
+ */
+const isValidEmail = (email) => {
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  return emailRegex.test(email);
+};
+
+/**
+ * Валидация телефона (базовая)
+ */
+const isValidPhone = (phone) => {
+  if (!phone) return false;
+  const phoneRegex = /^[\d\s\-\+\(\)]+$/;
+  return phoneRegex.test(phone) && phone.replace(/\D/g, '').length >= 10;
+};
+
+/**
+ * Валидация входных данных
+ */
+const validateInput = (data, rules) => {
+  const errors = [];
+  
+  for (const [field, rule] of Object.entries(rules)) {
+    const value = data[field];
+    
+    if (rule.required && (!value || (typeof value === 'string' && !value.trim()))) {
+      errors.push(`${rule.label || field} является обязательным полем`);
+      continue;
+    }
+    
+    if (value && rule.type) {
+      if (rule.type === 'email' && !isValidEmail(value)) {
+        errors.push(`${rule.label || field} должен быть корректным email адресом`);
+      } else if (rule.type === 'phone' && !isValidPhone(value)) {
+        errors.push(`${rule.label || field} должен быть корректным номером телефона`);
+      } else if (rule.type === 'number') {
+        const num = parseFloat(value);
+        if (isNaN(num)) {
+          errors.push(`${rule.label || field} должен быть числом`);
+        } else if (rule.min !== undefined && num < rule.min) {
+          errors.push(`${rule.label || field} должен быть не менее ${rule.min}`);
+        } else if (rule.max !== undefined && num > rule.max) {
+          errors.push(`${rule.label || field} должен быть не более ${rule.max}`);
+        }
+      } else if (rule.type === 'string') {
+        if (rule.minLength && value.length < rule.minLength) {
+          errors.push(`${rule.label || field} должен содержать не менее ${rule.minLength} символов`);
+        } else if (rule.maxLength && value.length > rule.maxLength) {
+          errors.push(`${rule.label || field} должен содержать не более ${rule.maxLength} символов`);
+        }
+      }
+    }
+  }
+  
+  return { isValid: errors.length === 0, errors };
+};
+
+/**
+ * Пагинация для списков
+ */
+const getPaginationParams = (query) => {
+  const page = Math.max(1, parseInt(query.page) || 1);
+  const limit = Math.min(100, Math.max(1, parseInt(query.limit) || 20));
+  const offset = (page - 1) * limit;
+  
+  return { page, limit, offset };
+};
+
+/**
+ * Форматирование ответа с пагинацией
+ */
+const sendPaginatedResponse = (res, data, pagination, message = 'Данные успешно получены') => {
+  return sendSuccess(res, message, {
+    items: data,
+    pagination: {
+      page: pagination.page,
+      limit: pagination.limit,
+      total: pagination.total,
+      totalPages: Math.ceil(pagination.total / pagination.limit)
+    }
+  });
+};
+
+/**
+ * Улучшенное логирование запросов
+ */
+const logRequest = (req, message = '') => {
+  const logData = {
+    method: req.method,
+    path: req.path,
+    ip: req.ip || req.connection.remoteAddress,
+    userAgent: req.get('user-agent'),
+    timestamp: new Date().toISOString()
+  };
+  if (req.user) {
+    logData.userId = req.user.id;
+  }
+  if (message) {
+    logData.message = message;
+  }
+  console.log('Request:', JSON.stringify(logData, null, 2));
+};
+
+/**
+ * Улучшенное логирование ошибок
+ */
+const logError = (error, context = {}) => {
+  console.error('Error:', {
+    message: error.message,
+    stack: error.stack,
+    ...context,
+    timestamp: new Date().toISOString()
+  });
+};
+
+/**
+ * Проверка прав доступа
+ */
+const requireRole = (...allowedRoles) => {
+  return (req, res, next) => {
+    if (!req.user) {
+      return sendError(res, "Для доступа к этому ресурсу требуется авторизация. Пожалуйста, войдите в систему.", 401);
+    }
+    
+    const userRole = req.user.role?.toUpperCase();
+    if (!allowedRoles.includes(userRole)) {
+      const rolesText = allowedRoles.length === 1 
+        ? `роль ${allowedRoles[0]}`
+        : `одна из ролей: ${allowedRoles.join(', ')}`;
+      return sendError(res, `У вас недостаточно прав для выполнения этого действия. Требуется ${rolesText}.`, 403);
+    }
+    
+    next();
+  };
+};
 
 app.use(cors({
   origin: (origin, callback) => {
@@ -48,15 +210,46 @@ app.use(cors({
 // JSON Middleware
 app.use(express.json());
 
+// Request logging middleware
+app.use((req, res, next) => {
+  if (req.path !== '/api/message' && !req.path.startsWith('/images')) {
+    logRequest(req);
+  }
+  next();
+});
+
 // Global Error Handler
 app.use((err, req, res, next) => {
-  console.error("Global error:", {
-    message: err.message,
-    stack: err.stack,
+  logError(err, {
     path: req.path,
-    method: req.method
+    method: req.method,
+    userId: req.user?.id
   });
-  res.status(500).json({ error: `Внутренняя ошибка сервера: ${err.message}` });
+  
+  // Multer errors
+  if (err instanceof multer.MulterError) {
+    if (err.code === 'LIMIT_FILE_SIZE') {
+      return sendError(res, 'Размер файла превышает допустимый лимит (100 МБ). Пожалуйста, выберите файл меньшего размера.', 413);
+    }
+    return sendError(res, 'Ошибка при загрузке файла. Пожалуйста, попробуйте еще раз.', 400);
+  }
+  
+  // JWT errors
+  if (err.name === 'JsonWebTokenError' || err.name === 'TokenExpiredError') {
+    return sendError(res, 'Ваша сессия истекла или токен недействителен. Пожалуйста, войдите заново.', 401);
+  }
+  
+  // Database errors
+  if (err.code === 'ECONNREFUSED') {
+    return sendError(res, 'Сервис временно недоступен. Пожалуйста, попробуйте позже.', 503);
+  }
+  
+  // Default error
+  const message = process.env.NODE_ENV === 'production' 
+    ? 'Произошла внутренняя ошибка сервера. Пожалуйста, попробуйте позже или обратитесь в поддержку.'
+    : `Внутренняя ошибка сервера: ${err.message}`;
+  
+  return sendError(res, message, 500, process.env.NODE_ENV === 'development' ? err.stack : null);
 });
 
 // Multer Configuration
@@ -114,7 +307,7 @@ const upload = multer({
 
     // Файл отклонен
     console.error(`File ${file.originalname} rejected: Invalid MIME type ${file.mimetype} and extension check failed`);
-    cb(new Error('Недопустимый формат файла. Разрешены только изображения (JPEG, PNG, GIF, BMP, TIFF, WebP, HEIC, HEIF, SVG, ICO, JP2, AVIF).'), false);
+    cb(new Error('Недопустимый формат файла. Пожалуйста, загрузите изображение в одном из поддерживаемых форматов: JPEG, PNG, GIF, BMP, TIFF, WebP, HEIC, HEIF, SVG, ICO, JP2 или AVIF.'), false);
   },
   limits: { fileSize: 100 * 1024 * 1024 }, // Лимит 100 МБ
 });
@@ -224,8 +417,7 @@ app.use('/images', express.static(path.join(__dirname, 'public/images')));
 const authenticate = async (req, res, next) => {
   const token = req.headers.authorization?.split(" ")[1];
   if (!token) {
-    console.error("Authentication error: Token missing");
-    return res.status(401).json({ error: "Токен отсутствует" });
+    return sendError(res, "Для доступа к этому ресурсу требуется авторизация. Пожалуйста, войдите в систему.", 401);
   }
   try {
     const decoded = jwt.verify(token, jwtSecret);
@@ -237,8 +429,8 @@ const authenticate = async (req, res, next) => {
     connection.release();
 
     if (users.length === 0) {
-      console.error("Authentication error: Invalid token for user ID:", decoded.id);
-      return res.status(401).json({ error: "Недействительный токен" });
+      logError(new Error("Invalid token"), { userId: decoded.id });
+      return sendError(res, "Ваша сессия истекла или токен недействителен. Пожалуйста, войдите заново.", 401);
     }
 
     const [promotionOrderTables] = await connection.execute("SHOW TABLES LIKE 'promotion_orders'");
@@ -288,7 +480,7 @@ const authenticate = async (req, res, next) => {
       message: error.message,
       stack: error.stack
     });
-    res.status(401).json({ error: "Недействительный токен" });
+    return sendError(res, "Ваша сессия истекла или токен недействителен. Пожалуйста, войдите заново.", 401);
   }
 };
 
@@ -558,18 +750,26 @@ async function testDatabaseConnection() {
 
 // Test Endpoint
 app.get("/api/message", (req, res) => {
-  res.json({ message: "Hello from Ala-Too backend!" });
+  sendSuccess(res, "Сервер работает корректно!", { 
+    service: "Ala-Too Realty API",
+    version: "1.0.0",
+    timestamp: new Date().toISOString()
+  });
 });
 
 app.post("/public/auth/register", async (req, res) => {
   const { name, email, password, phone } = req.body || {};
 
-  if (!name || !email || !password) {
-    return res.status(400).json({ error: "Имя, email и пароль обязательны" });
-  }
+  // Валидация входных данных
+  const validation = validateInput(req.body, {
+    name: { required: true, type: 'string', minLength: 2, maxLength: 100, label: 'Имя' },
+    email: { required: true, type: 'email', label: 'Email' },
+    password: { required: true, type: 'string', minLength: 6, maxLength: 100, label: 'Пароль' },
+    phone: { required: false, type: 'phone', label: 'Телефон' }
+  });
 
-  if (password.length < 6) {
-    return res.status(400).json({ error: "Пароль должен быть не менее 6 символов" });
+  if (!validation.isValid) {
+    return sendError(res, validation.errors.join('. '), 400);
   }
 
   const [firstNameRaw, ...restName] = name.trim().split(/\s+/);
@@ -583,7 +783,7 @@ app.post("/public/auth/register", async (req, res) => {
     connection = await pool.getConnection();
     const [existingUser] = await connection.execute("SELECT id FROM users1 WHERE email = ?", [email]);
     if (existingUser.length > 0) {
-      return res.status(409).json({ error: "Пользователь с таким email уже существует" });
+      return sendError(res, "Пользователь с таким email уже зарегистрирован. Пожалуйста, используйте другой email или войдите в систему.", 409);
     }
 
     const hashedPassword = await bcrypt.hash(password, 10);
@@ -611,17 +811,13 @@ app.post("/public/auth/register", async (req, res) => {
       created_at: createdRow?.created_at || new Date(),
     });
 
-    res.status(201).json({
-      message: "Регистрация успешна",
+    sendSuccess(res, "Регистрация прошла успешно! Добро пожаловать в Ala-Too Realty!", {
       token,
-      user,
-    });
+      user
+    }, 201);
   } catch (error) {
-    console.error("Registration error:", {
-      message: error.message,
-      stack: error.stack,
-    });
-    res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
+    logError(error, { endpoint: '/public/auth/register', email });
+    sendError(res, "Не удалось завершить регистрацию. Пожалуйста, попробуйте еще раз или обратитесь в поддержку.", 500);
   } finally {
     if (connection) connection.release();
   }
@@ -629,8 +825,15 @@ app.post("/public/auth/register", async (req, res) => {
 
 app.post("/public/auth/login", async (req, res) => {
   const { email, password } = req.body || {};
-  if (!email || !password) {
-    return res.status(400).json({ error: "Email и пароль обязательны" });
+  
+  // Валидация входных данных
+  const validation = validateInput(req.body, {
+    email: { required: true, type: 'email', label: 'Email' },
+    password: { required: true, type: 'string', minLength: 1, label: 'Пароль' }
+  });
+
+  if (!validation.isValid) {
+    return sendError(res, validation.errors.join('. '), 400);
   }
 
   let connection;
@@ -642,26 +845,26 @@ app.post("/public/auth/login", async (req, res) => {
     );
 
     if (rows.length === 0) {
-      return res.status(401).json({ error: "Недействительный email или пользователь не найден" });
+      return sendError(res, "Неверный email или пароль. Пожалуйста, проверьте введенные данные и попробуйте снова.", 401);
     }
 
     const userRecord = rows[0];
     const isPasswordValid = await bcrypt.compare(password, userRecord.password);
     if (!isPasswordValid) {
-      return res.status(401).json({ error: "Недействительный пароль" });
+      return sendError(res, "Неверный email или пароль. Пожалуйста, проверьте введенные данные и попробуйте снова.", 401);
     }
 
     const token = jwt.sign({ id: userRecord.id, role: userRecord.role }, jwtSecret, { expiresIn: "30d" });
     await connection.execute("UPDATE users1 SET token = ? WHERE id = ?", [token, userRecord.id]);
 
     const user = buildUserResponse(userRecord);
-    res.json({ message: "Авторизация успешна", token, user });
-  } catch (error) {
-    console.error("Public login error:", {
-      message: error.message,
-      stack: error.stack,
+    sendSuccess(res, `Добро пожаловать, ${user.first_name}! Вы успешно вошли в систему.`, {
+      token,
+      user
     });
-    res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
+  } catch (error) {
+    logError(error, { endpoint: '/public/auth/login', email });
+    sendError(res, "Не удалось войти в систему. Пожалуйста, попробуйте еще раз или обратитесь в поддержку.", 500);
   } finally {
     if (connection) connection.release();
   }
@@ -672,13 +875,10 @@ app.post("/public/auth/logout", authenticate, async (req, res) => {
   try {
     connection = await pool.getConnection();
     await connection.execute("UPDATE users1 SET token = NULL WHERE id = ?", [req.user.id]);
-    res.json({ message: "Выход выполнен" });
+    sendSuccess(res, "Вы успешно вышли из системы. До свидания!");
   } catch (error) {
-    console.error("Public logout error:", {
-      message: error.message,
-      stack: error.stack,
-    });
-    res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
+    logError(error, { endpoint: '/public/auth/logout', userId: req.user.id });
+    sendError(res, "Не удалось выйти из системы. Пожалуйста, попробуйте еще раз.", 500);
   } finally {
     if (connection) connection.release();
   }
@@ -693,21 +893,54 @@ app.get("/public/auth/profile", authenticate, async (req, res) => {
       [req.user.id]
     );
     if (rows.length === 0) {
-      return res.status(404).json({ error: "Пользователь не найден" });
+      return sendError(res, "Профиль пользователя не найден. Пожалуйста, войдите заново.", 404);
     }
 
     const user = buildUserResponse(rows[0]);
-    res.json({ user });
+    sendSuccess(res, "Профиль успешно загружен", { user });
   } catch (error) {
-    console.error("Profile fetch error:", {
-      message: error.message,
-      stack: error.stack,
-    });
-    res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
+    logError(error, { endpoint: '/public/auth/profile', userId: req.user.id });
+    sendError(res, "Не удалось загрузить профиль. Пожалуйста, попробуйте еще раз.", 500);
   } finally {
     if (connection) connection.release();
   }
 });
+
+// Простой rate limiting (в памяти)
+const rateLimitStore = new Map();
+const rateLimit = (windowMs = 60000, maxRequests = 100) => {
+  return (req, res, next) => {
+    const key = req.ip || req.connection.remoteAddress;
+    const now = Date.now();
+    const userRequests = rateLimitStore.get(key) || { count: 0, resetTime: now + windowMs };
+    
+    if (now > userRequests.resetTime) {
+      userRequests.count = 0;
+      userRequests.resetTime = now + windowMs;
+    }
+    
+    if (userRequests.count >= maxRequests) {
+      return sendError(res, `Слишком много запросов. Пожалуйста, подождите ${Math.ceil((userRequests.resetTime - now) / 1000)} секунд и попробуйте снова.`, 429);
+    }
+    
+    userRequests.count++;
+    rateLimitStore.set(key, userRequests);
+    
+    // Очистка старых записей каждые 5 минут
+    if (Math.random() < 0.01) {
+      for (const [k, v] of rateLimitStore.entries()) {
+        if (now > v.resetTime + 300000) {
+          rateLimitStore.delete(k);
+        }
+      }
+    }
+    
+    next();
+  };
+};
+
+// Применяем rate limiting ко всем запросам
+app.use(rateLimit(60000, 100)); // 100 запросов в минуту
 
 app.post("/public/payments", authenticate, upload.array("photos", 10), async (req, res) => {
   const {
@@ -720,14 +953,20 @@ app.post("/public/payments", authenticate, upload.array("photos", 10), async (re
     photoUrls: photoUrlsRaw,
   } = req.body || {};
 
-  if (!propertyId || !propertyTitle || !amount || !duration || !placement) {
-    return res.status(400).json({ error: "propertyId, propertyTitle, amount, duration и placement обязательны" });
+  // Валидация входных данных
+  const validation = validateInput(req.body, {
+    propertyId: { required: true, type: 'string', label: 'ID объявления' },
+    propertyTitle: { required: true, type: 'string', minLength: 3, maxLength: 255, label: 'Название объявления' },
+    amount: { required: true, type: 'number', min: 0.01, label: 'Сумма' },
+    duration: { required: true, type: 'string', label: 'Длительность' },
+    placement: { required: true, type: 'string', label: 'Размещение' }
+  });
+
+  if (!validation.isValid) {
+    return sendError(res, validation.errors.join('. '), 400);
   }
 
   const normalizedAmount = parseFloat(amount);
-  if (isNaN(normalizedAmount) || normalizedAmount <= 0) {
-    return res.status(400).json({ error: "Сумма должна быть положительным числом" });
-  }
 
   // Обрабатываем photoUrls - может быть массивом или строкой JSON
   let photoUrls = [];
@@ -761,13 +1000,13 @@ app.post("/public/payments", authenticate, upload.array("photos", 10), async (re
     );
     if (userRows.length === 0) {
       await connection.rollback();
-      return res.status(404).json({ error: "Пользователь не найден" });
+      return sendError(res, "Профиль пользователя не найден. Пожалуйста, войдите заново.", 404);
     }
 
     const currentBalance = parseFloat(userRows[0].balance || 0);
     if (currentBalance < normalizedAmount) {
       await connection.rollback();
-      return res.status(400).json({ error: "Недостаточно средств на балансе" });
+      return sendError(res, `Недостаточно средств на балансе. Текущий баланс: ${currentBalance.toFixed(2)} сом. Требуется: ${normalizedAmount.toFixed(2)} сом.`, 400);
     }
 
     // Получаем фотографии объявления из базы данных
@@ -859,8 +1098,7 @@ app.post("/public/payments", authenticate, upload.array("photos", 10), async (re
     // Формируем полные URL для фотографий
     const photoUrlsResponse = uniquePhotos.map(img => `https://s3.twcstorage.ru/${bucketName}/${img}`);
 
-    res.status(201).json({
-      message: "Оплата успешно зарегистрирована",
+    sendSuccess(res, "Заявка на продвижение успешно создана и отправлена на обработку!", {
       order: {
         id: result.insertId,
         property_id: propertyId,
@@ -873,20 +1111,17 @@ app.post("/public/payments", authenticate, upload.array("photos", 10), async (re
         photos: photoUrlsResponse,
       },
       balance: newBalance,
-    });
+    }, 201);
   } catch (error) {
     if (connection) {
       try {
         await connection.rollback();
       } catch (rollbackError) {
-        console.error("Rollback error after payment failure:", rollbackError.message);
+        logError(rollbackError, { context: 'payment rollback' });
       }
     }
-    console.error("Payment creation error:", {
-      message: error.message,
-      stack: error.stack,
-    });
-    res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
+    logError(error, { endpoint: '/public/payments', userId: req.user.id });
+    sendError(res, "Не удалось создать заявку на продвижение. Пожалуйста, попробуйте еще раз или обратитесь в поддержку.", 500);
   } finally {
     if (connection) connection.release();
   }
@@ -921,13 +1156,10 @@ app.get("/public/payments", authenticate, async (req, res) => {
       };
     });
 
-    res.json(ordersWithPhotos);
+    sendSuccess(res, `Найдено заявок: ${ordersWithPhotos.length}`, { orders: ordersWithPhotos });
   } catch (error) {
-    console.error("Fetch payments error:", {
-      message: error.message,
-      stack: error.stack,
-    });
-    res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
+    logError(error, { endpoint: '/public/payments', userId: req.user.id });
+    sendError(res, "Не удалось загрузить список заявок. Пожалуйста, попробуйте еще раз.", 500);
   } finally {
     if (connection) connection.release();
   }
@@ -935,8 +1167,9 @@ app.get("/public/payments", authenticate, async (req, res) => {
 
 // Admin payments overview
 app.get("/api/payments", authenticate, async (req, res) => {
+  // Проверка прав доступа
   if (!["SUPER_ADMIN", "ADMIN"].includes(req.user.role)) {
-    return res.status(403).json({ error: "Доступ запрещён: требуется роль ADMIN или SUPER_ADMIN" });
+    return sendError(res, "У вас недостаточно прав для просмотра всех заявок. Требуется роль администратора.", 403);
   }
 
   let connection;
@@ -978,28 +1211,27 @@ app.get("/api/payments", authenticate, async (req, res) => {
       };
     });
 
-    res.json(payments);
+    sendSuccess(res, `Найдено заявок на продвижение: ${payments.length}`, { payments });
   } catch (error) {
-    console.error("Admin payments fetch error:", {
-      message: error.message,
-      stack: error.stack,
-    });
-    res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
+    logError(error, { endpoint: '/api/payments', userId: req.user.id });
+    sendError(res, "Не удалось загрузить список заявок. Пожалуйста, попробуйте еще раз.", 500);
   } finally {
     if (connection) connection.release();
   }
 });
 
 app.patch("/api/payments/:id", authenticate, async (req, res) => {
+  // Проверка прав доступа
   if (!["SUPER_ADMIN", "ADMIN"].includes(req.user.role)) {
-    return res.status(403).json({ error: "Доступ запрещён: требуется роль ADMIN или SUPER_ADMIN" });
+    return sendError(res, "У вас недостаточно прав для изменения статуса заявок. Требуется роль администратора.", 403);
   }
 
   const { id } = req.params;
   const { status } = req.body || {};
   const allowedStatuses = ["processing", "active", "completed", "rejected"];
+  
   if (!status || !allowedStatuses.includes(status)) {
-    return res.status(400).json({ error: "Некорректный статус" });
+    return sendError(res, `Некорректный статус. Допустимые значения: ${allowedStatuses.join(', ')}.`, 400);
   }
 
   let connection;
@@ -1007,7 +1239,7 @@ app.patch("/api/payments/:id", authenticate, async (req, res) => {
     connection = await pool.getConnection();
     const [orders] = await connection.execute("SELECT id FROM promotion_orders WHERE id = ?", [id]);
     if (orders.length === 0) {
-      return res.status(404).json({ error: "Заявка не найдена" });
+      return sendError(res, "Заявка не найдена. Проверьте правильность ID заявки.", 404);
     }
 
     await connection.execute(
@@ -1015,13 +1247,20 @@ app.patch("/api/payments/:id", authenticate, async (req, res) => {
       [status, id]
     );
 
-    res.json({ message: "Статус обновлён" });
-  } catch (error) {
-    console.error("Admin payment status update error:", {
-      message: error.message,
-      stack: error.stack,
+    const statusMessages = {
+      processing: "Заявка отправлена на обработку",
+      active: "Продвижение активировано",
+      completed: "Продвижение завершено",
+      rejected: "Заявка отклонена"
+    };
+
+    sendSuccess(res, statusMessages[status] || "Статус заявки успешно обновлен", { 
+      orderId: parseInt(id), 
+      newStatus: status 
     });
-    res.status(500).json({ error: `Внутренняя ошибка сервера: ${error.message}` });
+  } catch (error) {
+    logError(error, { endpoint: '/api/payments/:id', userId: req.user.id, orderId: id });
+    sendError(res, "Не удалось обновить статус заявки. Пожалуйста, попробуйте еще раз.", 500);
   } finally {
     if (connection) connection.release();
   }
@@ -5796,8 +6035,12 @@ app.post("/api/groups", authenticate, async (req, res) => {
     connection = await pool.getConnection();
     const { name, description, is_public, max_members } = req.body;
     
-    if (!name || !name.trim()) {
-      return res.status(400).json({ error: "Название группы обязательно" });
+    const validation = validateInput(req.body, {
+      name: { required: true, type: 'string', minLength: 2, maxLength: 255, label: 'Название группы' }
+    });
+
+    if (!validation.isValid) {
+      return sendError(res, validation.errors.join('. '), 400);
     }
     
     // Ensure tables exist
@@ -5873,10 +6116,10 @@ app.post("/api/groups", authenticate, async (req, res) => {
     group.is_member = true;
     group.user_role = 'admin';
     
-    res.status(201).json(group);
+    sendSuccess(res, "Группа успешно создана!", { group }, 201);
   } catch (error) {
-    console.error("Error creating group:", error);
-    res.status(500).json({ error: `Ошибка создания группы: ${error.message}` });
+    logError(error, { endpoint: '/api/groups', userId: req.user.id });
+    sendError(res, "Не удалось создать группу. Пожалуйста, попробуйте еще раз.", 500);
   } finally {
     if (connection) connection.release();
   }
@@ -6012,7 +6255,7 @@ app.post("/api/groups/:id/leave", authenticate, async (req, res) => {
     );
     
     if (members.length === 0) {
-      return res.status(400).json({ error: "Вы не участник группы" });
+      return sendError(res, "Вы не являетесь участником этой группы.", 400);
     }
     
     // Don't allow creator to leave (should delete group instead)
@@ -6022,7 +6265,7 @@ app.post("/api/groups/:id/leave", authenticate, async (req, res) => {
     );
     
     if (groups[0].creator_id === userId) {
-      return res.status(400).json({ error: "Создатель группы не может покинуть её. Удалите группу вместо этого." });
+      return sendError(res, "Создатель группы не может покинуть её. Если вы хотите удалить группу, используйте функцию удаления группы.", 400);
     }
     
     await connection.execute(
@@ -6030,10 +6273,10 @@ app.post("/api/groups/:id/leave", authenticate, async (req, res) => {
       [groupId, userId]
     );
     
-    res.json({ message: "Вы покинули группу" });
+    sendSuccess(res, "Вы успешно покинули группу");
   } catch (error) {
-    console.error("Error leaving group:", error);
-    res.status(500).json({ error: `Ошибка выхода из группы: ${error.message}` });
+    logError(error, { endpoint: '/api/groups/:id/leave', userId: req.user.id, groupId });
+    sendError(res, "Не удалось покинуть группу. Пожалуйста, попробуйте еще раз.", 500);
   } finally {
     if (connection) connection.release();
   }
@@ -6053,19 +6296,19 @@ app.delete("/api/groups/:id", authenticate, async (req, res) => {
     );
     
     if (groups.length === 0) {
-      return res.status(404).json({ error: "Группа не найдена" });
+      return sendError(res, "Группа не найдена. Проверьте правильность ID группы.", 404);
     }
     
     if (groups[0].creator_id !== req.user.id) {
-      return res.status(403).json({ error: "Только создатель может удалить группу" });
+      return sendError(res, "Только создатель группы может удалить её.", 403);
     }
     
     await connection.execute("DELETE FROM \`groups\` WHERE id = ?", [groupId]);
     
-    res.json({ message: "Группа удалена" });
+    sendSuccess(res, "Группа успешно удалена");
   } catch (error) {
-    console.error("Error deleting group:", error);
-    res.status(500).json({ error: `Ошибка удаления группы: ${error.message}` });
+    logError(error, { endpoint: '/api/groups/:id', userId: req.user.id, groupId });
+    sendError(res, "Не удалось удалить группу. Пожалуйста, попробуйте еще раз.", 500);
   } finally {
     if (connection) connection.release();
   }
@@ -6081,7 +6324,7 @@ app.get("/api/users/search", authenticate, async (req, res) => {
     const { q, limit = 20 } = req.query;
     
     if (!q || q.trim().length < 2) {
-      return res.status(400).json({ error: "Минимум 2 символа для поиска" });
+      return sendError(res, "Для поиска необходимо ввести минимум 2 символа.", 400);
     }
     
     const searchTerm = `%${q.trim()}%`;
@@ -6097,10 +6340,10 @@ app.get("/api/users/search", authenticate, async (req, res) => {
       [searchTerm, searchTerm, searchTerm, searchTerm, req.user.id]
     );
     
-    res.json(users);
+    sendSuccess(res, `Найдено пользователей: ${users.length}`, { users });
   } catch (error) {
-    console.error("Error searching users:", error);
-    res.status(500).json({ error: `Ошибка поиска пользователей: ${error.message}` });
+    logError(error, { endpoint: '/api/users/search', userId: req.user.id });
+    sendError(res, "Не удалось выполнить поиск пользователей. Пожалуйста, попробуйте еще раз.", 500);
   } finally {
     if (connection) connection.release();
   }
@@ -6115,6 +6358,7 @@ app.get("/api/friendships", authenticate, async (req, res) => {
     connection = await pool.getConnection();
     const userId = req.user.id;
     const { status } = req.query; // 'pending', 'accepted', 'all'
+    const pagination = getPaginationParams(req.query);
     
     // Ensure table exists
     try {
@@ -6173,14 +6417,32 @@ app.get("/api/friendships", authenticate, async (req, res) => {
       params.push(status);
     }
     
-    query += ` ORDER BY f.updated_at DESC`;
+    query += ` ORDER BY f.updated_at DESC LIMIT ? OFFSET ?`;
+    params.push(pagination.limit, pagination.offset);
     
     const [friendships] = await connection.execute(query, params);
     
-    res.json(friendships);
+    // Get total count for pagination
+    let countQuery = `
+      SELECT COUNT(*) as total
+      FROM friendships f
+      WHERE (f.requester_id = ? OR f.addressee_id = ?)
+    `;
+    const countParams = [userId, userId];
+    if (status && status !== 'all') {
+      countQuery += ` AND f.status = ?`;
+      countParams.push(status);
+    }
+    const [countResult] = await connection.execute(countQuery, countParams);
+    const total = countResult[0].total;
+    
+    sendPaginatedResponse(res, friendships, {
+      ...pagination,
+      total
+    }, `Найдено запросов в друзья: ${friendships.length}`);
   } catch (error) {
-    console.error("Error fetching friendships:", error);
-    res.status(500).json({ error: `Ошибка получения друзей: ${error.message}` });
+    logError(error, { endpoint: '/api/friendships', userId: req.user.id });
+    sendError(res, "Не удалось загрузить список друзей. Пожалуйста, попробуйте еще раз.", 500);
   } finally {
     if (connection) connection.release();
   }
@@ -6195,7 +6457,7 @@ app.post("/api/friendships", authenticate, async (req, res) => {
     const requesterId = req.user.id;
     
     if (!user_id || user_id === requesterId) {
-      return res.status(400).json({ error: "Некорректный ID пользователя" });
+      return sendError(res, "Некорректный ID пользователя. Вы не можете отправить запрос в друзья самому себе.", 400);
     }
     
     // Ensure table exists
@@ -6242,11 +6504,11 @@ app.post("/api/friendships", authenticate, async (req, res) => {
     if (existing.length > 0) {
       const existingFriendship = existing[0];
       if (existingFriendship.status === 'accepted') {
-        return res.status(400).json({ error: "Вы уже друзья" });
+        return sendError(res, "Вы уже друзья с этим пользователем.", 400);
       } else if (existingFriendship.status === 'pending') {
-        return res.status(400).json({ error: "Запрос уже отправлен" });
+        return sendError(res, "Запрос в друзья уже отправлен и ожидает ответа.", 400);
       } else if (existingFriendship.status === 'blocked') {
-        return res.status(403).json({ error: "Запрос заблокирован" });
+        return sendError(res, "Этот запрос заблокирован.", 403);
       }
     }
     
@@ -6287,7 +6549,7 @@ app.patch("/api/friendships/:id", authenticate, async (req, res) => {
     const { status } = req.body; // 'accepted', 'rejected'
     
     if (!['accepted', 'rejected'].includes(status)) {
-      return res.status(400).json({ error: "Некорректный статус" });
+      return sendError(res, "Некорректный статус. Допустимые значения: 'accepted' (принять) или 'rejected' (отклонить).", 400);
     }
     
     // Get friendship
@@ -6297,14 +6559,14 @@ app.patch("/api/friendships/:id", authenticate, async (req, res) => {
     );
     
     if (friendships.length === 0) {
-      return res.status(404).json({ error: "Запрос не найден" });
+      return sendError(res, "Запрос в друзья не найден. Проверьте правильность ID запроса.", 404);
     }
     
     const friendship = friendships[0];
     
     // Check if user is the addressee
     if (friendship.addressee_id !== req.user.id) {
-      return res.status(403).json({ error: "Вы не можете изменить этот запрос" });
+      return sendError(res, "Вы можете изменять только запросы, которые были отправлены вам.", 403);
     }
     
     // Update status
@@ -6341,22 +6603,22 @@ app.delete("/api/friendships/:id", authenticate, async (req, res) => {
     );
     
     if (friendships.length === 0) {
-      return res.status(404).json({ error: "Запрос не найден" });
+      return sendError(res, "Запрос в друзья не найден. Проверьте правильность ID запроса.", 404);
     }
     
     const friendship = friendships[0];
     
     // Check if user is part of this friendship
     if (friendship.requester_id !== req.user.id && friendship.addressee_id !== req.user.id) {
-      return res.status(403).json({ error: "Вы не можете удалить этот запрос" });
+      return sendError(res, "Вы можете удалять только свои запросы в друзья.", 403);
     }
     
     await connection.execute("DELETE FROM friendships WHERE id = ?", [friendshipId]);
     
-    res.json({ message: "Запрос удален" });
+    sendSuccess(res, "Запрос в друзья успешно удален");
   } catch (error) {
-    console.error("Error deleting friendship:", error);
-    res.status(500).json({ error: `Ошибка удаления запроса: ${error.message}` });
+    logError(error, { endpoint: '/api/friendships/:id', userId: req.user.id, friendshipId });
+    sendError(res, "Не удалось удалить запрос в друзья. Пожалуйста, попробуйте еще раз.", 500);
   } finally {
     if (connection) connection.release();
   }
